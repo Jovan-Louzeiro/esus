@@ -1,541 +1,323 @@
-import { useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
-import {
-  Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronDown,
-  ChevronRight, CircleHelp, ClipboardList, Clock3, FileHeart, FileText, HeartPulse, Home,
-  Menu, MoreHorizontal, Plus, Search, ShieldCheck, Stethoscope, Syringe,
-  Trash2, Upload, UsersRound, X, Pencil, Pill, BarChart3,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import { age, bmi, formatDate, id, initialData, initials, isTriageRisk, nowLocal, parseDatabase, STORAGE_KEY, today, triageRiskLabels } from './data';
-import type { Appointment, AppointmentStatus, Database, Patient, Triage, TriageRisk } from './data';
+import { useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Activity, ArrowLeft, ArrowRight, Bell, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Clock3, Download, FileHeart, HeartPulse, LayoutDashboard, Menu, Plus, Search, Settings, ShieldCheck, Stethoscope, Syringe, Trash2, Upload, UserRound, UsersRound, X } from 'lucide-react'
+import { age, blankEncounter, blankPatient, blankVaccination, dateLabel, doses, encounterTypes, seedData, timeLabel, today, vaccines, type Appointment, type Data, type Encounter, type Patient, type Vaccination, type VitalKey } from './model'
+import { clearData, isData, loadData, saveData } from './storage'
 
-type Page = 'painel' | 'cidadaos' | 'acolhimento' | 'atendimento' | 'prontuario' | 'vacinacao' | 'procedimentos' | 'agendamentos' | 'medicamentos' | 'relatorios';
-type Notice = { text: string; error?: boolean };
-const navigation: { id: Page; label: string; icon: LucideIcon }[] = [
-  { id: 'painel', label: 'Visão geral', icon: Home },
-  { id: 'cidadaos', label: 'Cidadãos', icon: UsersRound },
-  { id: 'acolhimento', label: 'Escuta inicial', icon: HeartPulse },
-  { id: 'atendimento', label: 'Lista de atendimentos', icon: Stethoscope },
-  { id: 'prontuario', label: 'Prontuário', icon: FileHeart },
-  { id: 'vacinacao', label: 'Vacinação', icon: Syringe },
-  { id: 'procedimentos', label: 'Procedimentos', icon: ClipboardList },
-  { id: 'agendamentos', label: 'Agendamentos', icon: CalendarDays },
-  { id: 'medicamentos', label: 'Medicamentos', icon: Pill },
-  { id: 'relatorios', label: 'Relatórios', icon: BarChart3 },
-];
-const procedures = ['Aferição de pressão arterial', 'Glicemia capilar', 'Curativo', 'Administração de medicamentos', 'Nebulização', 'Antropometria', 'Retirada de pontos'];
-const appointmentStatusLabels: Record<AppointmentStatus, string> = {
-  scheduled: 'Agendado',
-  present: 'Presente na unidade',
-  triaged: 'Aguardando consulta',
-  completed: 'Atendido',
-  cancelled: 'Cancelado',
-  'no-show': 'Não compareceu',
-};
-const triageRiskOptions: { value: TriageRisk; label: string }[] = [
-  { value: 'emergency', label: 'Emergência · vermelho' },
-  { value: 'very-urgent', label: 'Muito urgente · laranja' },
-  { value: 'urgent', label: 'Urgente · amarelo' },
-  { value: 'less-urgent', label: 'Pouco urgente · verde' },
-  { value: 'not-urgent', label: 'Não urgente · azul' },
-];
-const bloodGlucoseMomentLabels: Record<string, string> = {
-  fasting: 'jejum',
-  'pre-prandial': 'pré-prandial',
-  'post-prandial': 'pós-prandial',
-  casual: 'casual',
-};
-const emptyData: Database = { version: 2, patients: [], triages: [], encounters: [], vaccinations: [], procedures: [], appointments: [] };
-const readInitial = (): { data: Database; error: string } => {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) {
-      const data = initialData();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      return { data, error: '' };
-    }
-    const parsed = parseDatabase(JSON.parse(stored) as unknown);
-    if (!parsed) throw new Error('Formato inválido');
-    return { data: parsed, error: '' };
-  } catch {
-    return { data: emptyData, error: 'Não foi possível ler os dados salvos. Importe um backup válido antes de continuar para evitar substituí-los.' };
+type Page = 'dashboard' | 'patients' | 'encounters' | 'vaccinations'
+type Modal = 'patient' | 'record' | 'newEncounter' | 'vaccination' | 'settings' | null
+const sexOptions = ['Feminino', 'Masculino', 'Outro', 'Não informado'] as const
+const localDate = (value: string) => {
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const initials = (name: string) => name.split(' ').filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()
+const formatLongDate = () => new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+const patientName = (data: Data, id: string) => data.patients.find(p => p.id === id)?.name ?? 'Paciente não encontrado'
+
+function ModalShell({ title, subtitle, onClose, children, wide = false }: { title: string; subtitle?: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  return <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}><section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+    <div className="modal-head"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-btn" onClick={onClose} aria-label="Fechar"><X size={20} /></button></div>{children}
+  </section></div>
+}
+function Field({ label, children, required = false, hint }: { label: string; children: ReactNode; required?: boolean; hint?: string }) {
+  return <label className="field"><span>{label}{required && <b className="required"> *</b>}</span>{children}{hint && <small>{hint}</small>}</label>
+}
+function Badge({ status }: { status: string }) {
+  const style = status === 'Finalizado' ? 'green' : status === 'Em andamento' || status === 'Em atendimento' ? 'blue' : 'amber'
+  return <span className={`badge ${style}`}><i />{status}</span>
+}
+function Avatar({ name, index = 0 }: { name: string; index?: number }) { return <span className={`avatar avatar-${index % 5}`}>{initials(name)}</span> }
+function Empty({ text }: { text: string }) { return <div className="empty"><FileHeart size={25} /><p>{text}</p></div> }
+function PatientCell({ patient, index = 0, subtitle }: { patient?: Patient; index?: number; subtitle?: string }) {
+  if (!patient) return <span>Paciente não encontrado</span>
+  return <div className="person"><Avatar name={patient.name} index={index} /><div><strong>{patient.name}</strong>{subtitle && <small>{subtitle}</small>}</div></div>
+}
+function Stat({ icon, label, value, note, tone }: { icon: ReactNode; label: string; value: number; note: string; tone: string }) {
+  return <div className="stat"><div className="stat-top"><span>{label}</span><div className={`stat-icon ${tone}`}>{icon}</div></div><strong>{value.toString().padStart(2, '0')}</strong><small>{note}</small></div>
+}
+
+function PatientForm({ patient, onSave, onClose, onError }: { patient: Patient; onSave: (patient: Patient) => void; onClose: () => void; onError: (message: string) => void }) {
+  const [form, setForm] = useState(patient)
+  const set = (key: keyof Patient, value: string) => setForm(old => ({ ...old, [key]: value }))
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (form.birth > today()) { onError('A data de nascimento não pode estar no futuro.'); return }
+    if (form.cpf && form.cpf.replace(/\D/g, '').length !== 11) { onError('Informe um CPF com 11 dígitos.'); return }
+    if (form.cns && form.cns.replace(/\D/g, '').length !== 15) { onError('Informe um CNS com 15 dígitos.'); return }
+    if (form.cep && form.cep.replace(/\D/g, '').length !== 8) { onError('Informe um CEP com 8 dígitos.'); return }
+    if (form.phone && ![10, 11].includes(form.phone.replace(/\D/g, '').length)) { onError('Informe um telefone com DDD e 10 ou 11 dígitos.'); return }
+    onSave({ ...form, name: form.name.trim() })
   }
-};
-const value = (form: FormData, key: string) => String(form.get(key) ?? '').trim();
-const byNewest = <T extends { date: string }>(items: T[]) => [...items].sort((a, b) => b.date.localeCompare(a.date));
-const byOldest = <T extends { date: string }>(items: T[]) => [...items].sort((a, b) => a.date.localeCompare(b.date));
-const shortDate = new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
+  const input = (key: keyof Patient, placeholder = '', type = 'text') => <input type={type} value={form[key]} placeholder={placeholder} onChange={e => set(key, e.target.value)} />
+  return <form onSubmit={submit}><div className="modal-body">
+    <div className="form-section-title">Informações pessoais</div><div className="form-grid">
+      <Field label="Nome completo" required><input required value={form.name} onChange={e => set('name', e.target.value)} placeholder="Nome do paciente fictício" /></Field>
+      <Field label="Data de nascimento" required><input required type="date" max={today()} value={form.birth} onChange={e => set('birth', e.target.value)} /></Field>
+      <Field label="CPF">{input('cpf', '000.000.000-00')}</Field><Field label="Cartão SUS (CNS)">{input('cns', '15 dígitos')}</Field>
+      <Field label="Sexo"><select value={form.sex} onChange={e => set('sex', e.target.value)}>{sexOptions.map(s => <option key={s}>{s}</option>)}</select></Field>
+      <Field label="Nome da mãe">{input('mother')}</Field><Field label="Telefone">{input('phone', '(00) 00000-0000', 'tel')}</Field><Field label="E-mail">{input('email', 'email@exemplo.com', 'email')}</Field>
+    </div><div className="form-section-title spaced">Endereço</div><div className="form-grid">
+      <Field label="CEP">{input('cep', '00000-000')}</Field><Field label="Município">{input('city')}</Field><Field label="Bairro">{input('neighborhood')}</Field><Field label="Rua">{input('street')}</Field><Field label="Número">{input('number')}</Field><Field label="Complemento">{input('complement')}</Field>
+    </div>
+  </div><div className="modal-footer"><button type="button" className="btn secondary" onClick={onClose}>Cancelar</button><button className="btn primary" type="submit">Salvar paciente</button></div></form>
+}
 
-function Field({ label, children, required = false }: { label: string; children: ReactNode; required?: boolean }) {
-  return <label className="field"><span>{label}{required && <b> *</b>}</span>{children}</label>;
+function VaccinationForm({ vaccination, patients, onSave, onClose, onError }: { vaccination: Vaccination; patients: Patient[]; onSave: (v: Vaccination) => void; onClose: () => void; onError: (message: string) => void }) {
+  const [form, setForm] = useState(vaccination)
+  const set = (key: keyof Vaccination, value: string) => setForm(old => ({ ...old, [key]: value }))
+  return <form onSubmit={e => { e.preventDefault(); if (form.nextDose && form.nextDose < form.date) { onError('A próxima dose não pode ser anterior à aplicação.'); return }; onSave(form) }}>
+    <div className="modal-body"><div className="form-grid">
+      <Field label="Paciente" required><select required value={form.patientId} onChange={e => set('patientId', e.target.value)}><option value="">Selecione um paciente</option>{patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+      <Field label="Vacina" required><select required value={form.vaccine} onChange={e => set('vaccine', e.target.value)}><option value="">Selecione</option>{vaccines.map(v => <option key={v}>{v}</option>)}</select></Field>
+      <Field label="Dose" required><select required value={form.dose} onChange={e => set('dose', e.target.value)}><option value="">Selecione</option>{doses.map(d => <option key={d}>{d}</option>)}</select></Field>
+      <Field label="Data de aplicação" required><input required type="date" max={today()} value={form.date} onChange={e => set('date', e.target.value)} /></Field>
+      <Field label="Lote" required><input required value={form.batch} onChange={e => set('batch', e.target.value)} /></Field>
+      <Field label="Fabricante" required><input required value={form.manufacturer} onChange={e => set('manufacturer', e.target.value)} /></Field>
+      <Field label="Unidade de saúde"><input value={form.unit} onChange={e => set('unit', e.target.value)} /></Field>
+      <Field label="Via de administração"><input value={form.route} onChange={e => set('route', e.target.value)} placeholder="Ex.: Intramuscular" /></Field>
+      <Field label="Local de aplicação"><input value={form.site} onChange={e => set('site', e.target.value)} placeholder="Ex.: Braço esquerdo" /></Field>
+      <Field label="Próxima dose prevista"><input type="date" value={form.nextDose} onChange={e => set('nextDose', e.target.value)} /></Field>
+      <div className="full"><Field label="Observações"><textarea rows={3} value={form.notes} onChange={e => set('notes', e.target.value)} /></Field></div>
+    </div></div><div className="modal-footer"><button type="button" className="btn secondary" onClick={onClose}>Cancelar</button><button className="btn primary">Salvar registro</button></div>
+  </form>
 }
-function PageHeading({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description: string; action?: ReactNode }) {
-  return <div className="page-heading"><div>{eyebrow && <div className="eyebrow">{eyebrow}</div>}<h1>{title}</h1><p>{description}</p></div>{action}</div>;
+
+function RecordModal({ patient, data, onClose, onEdit, onClinical, onStart, onVaccinate }: { patient: Patient; data: Data; onClose: () => void; onEdit: () => void; onClinical: (p: Patient) => void; onStart: () => void; onVaccinate: () => void }) {
+  const [tab, setTab] = useState('Dados pessoais')
+  const [clinical, setClinical] = useState(patient)
+  const tabs = ['Dados pessoais', 'Histórico clínico', 'Atendimentos', 'Vacinação']
+  const encounters = data.encounters.filter(e => e.patientId === patient.id).sort((a, b) => b.date.localeCompare(a.date))
+  const vaccinations = data.vaccinations.filter(v => v.patientId === patient.id).sort((a, b) => b.date.localeCompare(a.date))
+  return <ModalShell title="Prontuário do paciente" subtitle="Informações de acompanhamento fictícias" onClose={onClose} wide>
+    <div className="record-person"><PatientCell patient={patient} subtitle={`${age(patient.birth)} anos · ${patient.sex} · CNS ${patient.cns || 'não informado'}`} /><div className="row-actions"><button className="btn secondary small" onClick={onEdit}>Editar cadastro</button><button className="btn primary small" onClick={onStart}><Plus size={15} /> Atendimento</button></div></div>
+    <div className="tabs">{tabs.map(t => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>)}</div>
+    <div className="modal-body record-body">
+      {tab === 'Dados pessoais' && <div className="detail-grid">{[['CPF', patient.cpf], ['CNS', patient.cns], ['Data de nascimento', dateLabel(patient.birth)], ['Sexo', patient.sex], ['Nome da mãe', patient.mother], ['Telefone', patient.phone], ['E-mail', patient.email], ['CEP', patient.cep], ['Município', patient.city], ['Bairro', patient.neighborhood], ['Endereço', [patient.street, patient.number, patient.complement].filter(Boolean).join(', ')]].map(([label, value]) => <div key={label}><small>{label}</small><strong>{value || 'Não informado'}</strong></div>)}</div>}
+      {tab === 'Histórico clínico' && <form onSubmit={e => { e.preventDefault(); onClinical(clinical) }} className="clinical-form">
+        {([['allergies', 'Alergias'], ['conditions', 'Condições de saúde'], ['medications', 'Medicamentos em uso']] as const).map(([key, label]) => <Field label={label} key={key}><textarea rows={3} value={clinical[key]} onChange={e => setClinical({ ...clinical, [key]: e.target.value })} placeholder={`Registre ${label.toLowerCase()}...`} /></Field>)}
+        <button className="btn primary">Salvar informações</button></form>}
+      {tab === 'Atendimentos' && (encounters.length ? <div className="history-list">{encounters.map(e => <div className="history-item" key={e.id}><div><strong>{e.type}</strong><small>{dateLabel(localDate(e.date))} às {timeLabel(e.date)} · {e.professional}</small>{e.soap.assessment && <p>{e.soap.assessment}</p>}</div><Badge status={e.status} /></div>)}</div> : <Empty text="Nenhum atendimento registrado para este paciente." />)}
+      {tab === 'Vacinação' && <><div className="section-action"><span>Histórico de aplicações</span><button className="btn secondary small" onClick={onVaccinate}><Plus size={15} /> Registrar vacina</button></div>{vaccinations.length ? <div className="history-list">{vaccinations.map(v => <div className="history-item" key={v.id}><div><strong>{v.vaccine} · {v.dose}</strong><small>Aplicação: {dateLabel(v.date)} · Lote: {v.batch}</small><small>Próxima dose: {dateLabel(v.nextDose)}</small></div><span className="badge green"><i />Registrada</span></div>)}</div> : <Empty text="Nenhuma vacina registrada para este paciente." />}</>}
+    </div>
+  </ModalShell>
 }
-function Empty({ text }: { text: string }) {
-  return <div className="empty"><FileText size={23} /><span>{text}</span></div>;
+
+function Dashboard({ data, navigate, openPatient, openEncounter, quick }: { data: Data; navigate: (p: Page) => void; openPatient: (id: string) => void; openEncounter: (id: string) => void; quick: (action: string) => void }) {
+  const recent = [...data.encounters].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5)
+  const agenda = data.appointments.filter(a => a.date === today()).sort((a, b) => a.time.localeCompare(b.time))
+  const completedToday = data.encounters.filter(e => e.status === 'Finalizado' && localDate(e.finishedAt) === today()).length
+  const active = data.encounters.filter(e => e.status === 'Em andamento').length
+  const vaccinatedToday = data.vaccinations.filter(v => v.date === today()).length
+  return <>
+    <div className="welcome"><div><div className="eyebrow"><span className="eyebrow-dot" /> VISÃO GERAL DA UNIDADE</div><h1>Olá, enfermeiro(a) <span className="wave">✦</span></h1><p>Acompanhe a rotina da sua unidade de saúde.</p></div><div className="welcome-date"><CalendarDays size={18} /><span>Hoje, {formatLongDate()}</span></div></div>
+    <div className="stats-grid">
+      <Stat icon={<UsersRound size={21} />} label="Pacientes cadastrados" value={data.patients.length} note="Total de pacientes" tone="mint" />
+      <Stat icon={<CheckCircle2 size={21} />} label="Atendimentos realizados" value={completedToday} note="Finalizados hoje" tone="sky" />
+      <Stat icon={<Clock3 size={21} />} label="Atendimentos pendentes" value={active} note="Em andamento" tone="sand" />
+      <Stat icon={<Syringe size={21} />} label="Vacinas aplicadas" value={vaccinatedToday} note="Doses registradas hoje" tone="lavender" />
+    </div>
+    <div className="dashboard-grid">
+      <section className="panel recent-panel"><div className="panel-head"><div><h2>Atendimentos recentes</h2><p>Acompanhe os últimos atendimentos realizados</p></div><button className="text-link" onClick={() => navigate('encounters')}>Ver todos <ArrowRight size={15} /></button></div>
+        {recent.length ? <div className="table-scroll"><table><thead><tr><th>PACIENTE</th><th>HORÁRIO</th><th>TIPO DE ATENDIMENTO</th><th>STATUS</th><th></th></tr></thead><tbody>{recent.map((e, i) => <tr key={e.id}><td><button className="plain-button" onClick={() => openPatient(e.patientId)}><PatientCell patient={data.patients.find(p => p.id === e.patientId)} index={i} /></button></td><td>{timeLabel(e.date)}</td><td>{e.type}</td><td><Badge status={e.status} /></td><td><button className="icon-btn subtle" aria-label="Abrir atendimento" onClick={() => openEncounter(e.id)}><ChevronRight size={18} /></button></td></tr>)}</tbody></table></div> : <Empty text="Nenhum atendimento registrado ainda." />}
+      </section>
+      <section className="panel agenda-panel"><div className="panel-head"><div><h2>Agenda de hoje</h2><p>Consultas programadas para hoje</p></div><div className="panel-icon"><CalendarDays size={18} /></div></div>
+        {agenda.length ? <div className="agenda-list">{agenda.map((a, i) => <button className="agenda-item" key={a.id} onClick={() => openPatient(a.patientId)}><span className="agenda-time">{a.time}</span><span className={`timeline-dot dot-${i % 3}`} /><span className="agenda-copy"><strong>{patientName(data, a.patientId)}</strong><small>{a.reason}</small><Badge status={a.status} /></span><ChevronRight size={15} /></button>)}</div> : <Empty text="Nenhum paciente agendado para hoje." />}
+        <div className="agenda-footer"><CalendarDays size={15} /> {agenda.length} {agenda.length === 1 ? 'agendamento' : 'agendamentos'} para hoje</div>
+      </section>
+    </div>
+    <section className="quick-section"><div className="section-heading"><div><h2>Ações rápidas</h2><p>Acesse as principais funcionalidades</p></div></div><div className="quick-grid">
+      {[
+        { label: 'Novo paciente', sub: 'Cadastrar paciente', icon: <UsersRound size={21} />, action: 'patient', tone: 'mint' },
+        { label: 'Iniciar atendimento', sub: 'Nova consulta', icon: <Stethoscope size={21} />, action: 'encounter', tone: 'sky' },
+        { label: 'Registrar vacinação', sub: 'Adicionar aplicação', icon: <Syringe size={21} />, action: 'vaccination', tone: 'lavender' },
+        { label: 'Buscar paciente', sub: 'Consultar prontuário', icon: <Search size={21} />, action: 'search', tone: 'sand' },
+      ].map(item => <button className="quick-card" key={item.action} onClick={() => quick(item.action)}><div className={`quick-icon ${item.tone}`}>{item.icon}</div><span><strong>{item.label}</strong><small>{item.sub}</small></span><ChevronRight size={17} /></button>)}
+    </div></section>
+  </>
 }
-function SectionTitle({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
-  return <div className="section-title"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>{action}</div>;
+
+function PatientsPage({ data, query, setQuery, openPatient, editPatient, deletePatient, addPatient }: { data: Data; query: string; setQuery: (q: string) => void; openPatient: (id: string) => void; editPatient: (p: Patient) => void; deletePatient: (p: Patient) => void; addPatient: () => void }) {
+  const [sex, setSex] = useState('Todos')
+  const [sort, setSort] = useState('name')
+  const patients = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase('pt-BR')
+    return data.patients.filter(p => (sex === 'Todos' || p.sex === sex) && (!q || [p.name, p.cpf, p.cns].some(v => v.toLocaleLowerCase('pt-BR').includes(q) || (q.replace(/\D/g, '') && v.replace(/\D/g, '').includes(q.replace(/\D/g, '')))))).sort((a, b) => sort === 'birth' ? a.birth.localeCompare(b.birth) : a.name.localeCompare(b.name, 'pt-BR'))
+  }, [data.patients, query, sex, sort])
+  return <><div className="page-title"><div><div className="eyebrow">CADASTROS DA UNIDADE</div><h1>Pacientes</h1><p>Gerencie os pacientes e consulte seus prontuários.</p></div><button className="btn primary" onClick={addPatient}><Plus size={18} /> Novo paciente</button></div>
+    <section className="panel"><div className="list-heading"><div><h2>Pacientes cadastrados <span className="count">{patients.length}</span></h2><p>Dados fictícios da unidade de saúde</p></div></div>
+      <div className="filters"><div className="search-field"><Search size={17} /><input placeholder="Buscar por nome, CPF ou CNS..." value={query} onChange={e => setQuery(e.target.value)} /></div><select aria-label="Filtrar por sexo" value={sex} onChange={e => setSex(e.target.value)}><option>Todos</option>{sexOptions.map(s => <option key={s}>{s}</option>)}</select><select aria-label="Ordenar pacientes" value={sort} onChange={e => setSort(e.target.value)}><option value="name">Ordenar por nome</option><option value="birth">Ordenar por nascimento</option></select></div>
+      {patients.length ? <div className="table-scroll"><table><thead><tr><th>NOME COMPLETO</th><th>CPF</th><th>NASCIMENTO</th><th>SEXO</th><th>TELEFONE</th><th>CARTÃO SUS</th><th>AÇÕES</th></tr></thead><tbody>{patients.map((p, i) => <tr key={p.id}><td><button className="plain-button" onClick={() => openPatient(p.id)}><PatientCell patient={p} index={i} /></button></td><td>{p.cpf || '—'}</td><td>{dateLabel(p.birth)}</td><td>{p.sex}</td><td>{p.phone || '—'}</td><td>{p.cns || '—'}</td><td><div className="table-actions"><button onClick={() => openPatient(p.id)}>Prontuário</button><button onClick={() => editPatient(p)}>Editar</button><button className="danger-text" onClick={() => deletePatient(p)}>Excluir</button></div></td></tr>)}</tbody></table></div> : <Empty text="Nenhum paciente encontrado." />}
+    </section></>
 }
-function PatientSelect({ patients, selected, onChange }: { patients: Patient[]; selected: string; onChange: (id: string) => void }) {
-  return <Field label="Cidadão" required><select required value={selected} onChange={event => onChange(event.target.value)}><option value="">Selecione um cidadão</option>{patients.map(patient => <option key={patient.id} value={patient.id}>{patient.name} {patient.cns ? `· CNS ${patient.cns}` : ''}</option>)}</select></Field>;
+
+function EncountersPage({ data, query, setQuery, openEncounter, add }: { data: Data; query: string; setQuery: (q: string) => void; openEncounter: (id: string) => void; add: () => void }) {
+  const [filter, setFilter] = useState('Todos')
+  const encounters = [...data.encounters].filter(e => patientName(data, e.patientId).toLocaleLowerCase('pt-BR').includes(query.toLocaleLowerCase('pt-BR')) && (filter === 'Todos' || (filter === 'Hoje' ? localDate(e.date) === today() : e.status === filter))).sort((a, b) => b.date.localeCompare(a.date))
+  return <><div className="page-title"><div><div className="eyebrow">CUIDADO E ACOMPANHAMENTO</div><h1>Atendimentos</h1><p>Gerencie as consultas de enfermagem da unidade.</p></div><button className="btn primary" onClick={add}><Plus size={18} /> Novo atendimento</button></div>
+    <section className="panel"><div className="list-heading"><div><h2>Atendimentos <span className="count">{encounters.length}</span></h2><p>Histórico de consultas da unidade</p></div></div>
+      <div className="filters"><div className="search-field"><Search size={17} /><input placeholder="Buscar paciente..." value={query} onChange={e => setQuery(e.target.value)} /></div><select aria-label="Filtrar atendimentos" value={filter} onChange={e => setFilter(e.target.value)}><option>Todos</option><option>Hoje</option><option>Em andamento</option><option>Finalizado</option></select></div>
+      {encounters.length ? <div className="table-scroll"><table><thead><tr><th>PACIENTE</th><th>DATA</th><th>HORÁRIO</th><th>TIPO</th><th>PROFISSIONAL</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>{encounters.map((e, i) => <tr key={e.id}><td><PatientCell patient={data.patients.find(p => p.id === e.patientId)} index={i} /></td><td>{dateLabel(localDate(e.date))}</td><td>{timeLabel(e.date)}</td><td>{e.type}</td><td>{e.professional}</td><td><Badge status={e.status} /></td><td><button className="table-link" onClick={() => openEncounter(e.id)}>{e.status === 'Finalizado' ? 'Visualizar' : 'Continuar'}</button></td></tr>)}</tbody></table></div> : <Empty text="Nenhum atendimento encontrado." />}
+    </section></>
 }
-function Avatar({ name, index = 0 }: { name: string; index?: number }) {
-  return <span className={`avatar avatar-${index % 4}`}>{initials(name)}</span>;
+
+function VaccinationsPage({ data, query, setQuery, add, edit, remove }: { data: Data; query: string; setQuery: (q: string) => void; add: () => void; edit: (v: Vaccination) => void; remove: (v: Vaccination) => void }) {
+  const [patient, setPatient] = useState('')
+  const [vaccine, setVaccine] = useState('')
+  const records = [...data.vaccinations].filter(v => (!patient || v.patientId === patient) && (!vaccine || v.vaccine === vaccine) && patientName(data, v.patientId).toLocaleLowerCase('pt-BR').includes(query.toLocaleLowerCase('pt-BR'))).sort((a, b) => b.date.localeCompare(a.date))
+  const upcoming = data.vaccinations.filter(v => v.nextDose && v.nextDose >= today())
+  const pending = new Set(data.vaccinations.filter(v => v.nextDose && v.nextDose <= today()).map(v => v.patientId)).size
+  return <><div className="page-title"><div><div className="eyebrow">IMUNIZAÇÃO</div><h1>Vacinação</h1><p>Registre aplicações e acompanhe o histórico vacinal.</p></div><button className="btn primary" onClick={add}><Plus size={18} /> Registrar vacinação</button></div>
+    <div className="stats-grid compact-stats"><Stat icon={<Syringe size={21} />} label="Aplicadas hoje" value={data.vaccinations.filter(v => v.date === today()).length} note="Doses registradas hoje" tone="mint" /><Stat icon={<ClipboardList size={21} />} label="Total de registros" value={data.vaccinations.length} note="Aplicações registradas" tone="sky" /><Stat icon={<Clock3 size={21} />} label="Pacientes pendentes" value={pending} note="Doses previstas até hoje" tone="sand" /><Stat icon={<CalendarDays size={21} />} label="Próximas doses" value={upcoming.length} note="Previstas a partir de hoje" tone="lavender" /></div>
+    <section className="panel"><div className="list-heading"><div><h2>Registros de vacinação <span className="count">{records.length}</span></h2><p>Aplicações e próximas doses informadas manualmente</p></div></div><div className="filters"><div className="search-field"><Search size={17} /><input placeholder="Buscar paciente..." value={query} onChange={e => setQuery(e.target.value)} /></div><select aria-label="Filtrar por paciente" value={patient} onChange={e => setPatient(e.target.value)}><option value="">Todos os pacientes</option>{data.patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><select aria-label="Filtrar por vacina" value={vaccine} onChange={e => setVaccine(e.target.value)}><option value="">Todas as vacinas</option>{vaccines.map(v => <option key={v}>{v}</option>)}</select></div>
+      {records.length ? <div className="table-scroll"><table><thead><tr><th>PACIENTE</th><th>VACINA</th><th>DOSE</th><th>APLICAÇÃO</th><th>PRÓXIMA DOSE</th><th>LOTE</th><th>FABRICANTE</th><th>PROFISSIONAL</th><th>AÇÕES</th></tr></thead><tbody>{records.map((v, i) => <tr key={v.id}><td><PatientCell patient={data.patients.find(p => p.id === v.patientId)} index={i} /></td><td>{v.vaccine}</td><td>{v.dose}</td><td>{dateLabel(v.date)}</td><td>{dateLabel(v.nextDose)}</td><td>{v.batch}</td><td>{v.manufacturer}</td><td>{v.professional}</td><td><div className="table-actions"><button onClick={() => edit(v)}>Editar</button><button className="danger-text" onClick={() => remove(v)}>Excluir</button></div></td></tr>)}</tbody></table></div> : <Empty text="Nenhum registro de vacinação encontrado." />}
+    </section></>
 }
-function TriageRiskBadge({ risk }: { risk?: TriageRisk }) {
-  return <span className={`risk-badge risk-${risk ?? 'unknown'}`}>{risk ? triageRiskLabels[risk] : 'Não informado'}</span>;
+
+function Consultation({ encounter, patient, update, back, finish, saved }: { encounter: Encounter; patient: Patient; update: (e: Encounter) => void; back: () => void; finish: () => void; saved: () => void }) {
+  const readonly = encounter.status === 'Finalizado'
+  const vitalFields: [VitalKey, string, string][] = [['pressure', 'Pressão arterial', 'mmHg · ex.: 120/80'], ['heart', 'Frequência cardíaca', 'bpm'], ['respiratory', 'Frequência respiratória', 'irpm'], ['temperature', 'Temperatura', '°C'], ['oxygen', 'Saturação de oxigênio', '%'], ['weight', 'Peso', 'kg'], ['height', 'Altura', 'cm'], ['glucose', 'Glicemia capilar', 'mg/dL']]
+  const weight = Number(encounter.vitals.weight), height = Number(encounter.vitals.height)
+  const bmi = weight > 0 && height > 0 ? (weight / (height / 100) ** 2).toFixed(1) : '—'
+  return <><button className="back-link" onClick={back}><ArrowLeft size={17} /> Voltar para atendimentos</button><div className="page-title consultation-title"><div><div className="eyebrow">CONSULTA DE ENFERMAGEM</div><h1>{readonly ? 'Atendimento finalizado' : 'Atendimento em andamento'}</h1><p>Registro clínico de treinamento · {encounter.type}</p></div><Badge status={encounter.status} /></div>
+    <div className="consult-patient"><PatientCell patient={patient} subtitle={`${age(patient.birth)} anos · ${patient.sex} · CNS ${patient.cns || 'não informado'}`} /><div><small>DATA E HORÁRIO</small><strong>{dateLabel(localDate(encounter.date))} às {timeLabel(encounter.date)}</strong></div><div><small>PROFISSIONAL</small><strong>{encounter.professional}</strong></div></div>
+    <fieldset disabled={readonly} className="consult-fields">
+      <section className="panel consult-section"><div className="section-title-icon"><div className="small-icon mint"><HeartPulse size={19} /></div><div><h2>Sinais vitais</h2><p>Registre os dados aferidos durante a consulta</p></div></div><div className="vitals-grid">
+        {vitalFields.map(([key, label, unit]) => <Field label={label} key={key}><div className="unit-input"><input type={key === 'pressure' ? 'text' : 'number'} min={key === 'pressure' ? undefined : '0'} step="any" value={encounter.vitals[key]} placeholder="—" onChange={e => update({ ...encounter, vitals: { ...encounter.vitals, [key]: e.target.value } })} /><span>{unit}</span></div></Field>)}
+        <Field label="IMC calculado"><div className="bmi-value">{bmi} <span>kg/m²</span></div></Field>
+      </div></section>
+      <section className="panel consult-section"><div className="section-title-icon"><div className="small-icon sky"><ClipboardList size={19} /></div><div><h2>Registro SOAP</h2><p>Documente a consulta de forma estruturada</p></div></div><div className="soap-grid">
+        {([['subjective', 'S', 'Subjetivo', 'Queixas, sintomas e relato do paciente...'], ['objective', 'O', 'Objetivo', 'Exame físico e observações clínicas...'], ['assessment', 'A', 'Avaliação', 'Avaliação clínica e problemas identificados...'], ['plan', 'P', 'Plano', 'Condutas, orientações e acompanhamento...']] as const).map(([key, letter, title, placeholder]) => <Field key={key} label={`${letter} — ${title}`}><textarea rows={5} value={encounter.soap[key]} placeholder={placeholder} onChange={e => update({ ...encounter, soap: { ...encounter.soap, [key]: e.target.value } })} /></Field>)}
+      </div></section>
+      <section className="panel consult-section"><div className="section-title-icon"><div className="small-icon lavender"><FileHeart size={19} /></div><div><h2>Condutas</h2><p>Registros simulados de orientações e acompanhamento</p></div></div><div className="form-grid">
+        {([['guidance', 'Orientações ao paciente'], ['exams', 'Solicitação de exames'], ['referral', 'Encaminhamento'], ['notes', 'Observações adicionais']] as const).map(([key, label]) => <Field key={key} label={label}><textarea rows={3} value={encounter.conduct[key]} onChange={e => update({ ...encounter, conduct: { ...encounter.conduct, [key]: e.target.value } })} /></Field>)}
+        <Field label="Data de retorno"><input type="date" value={encounter.conduct.returnDate} onChange={e => update({ ...encounter, conduct: { ...encounter.conduct, returnDate: e.target.value } })} /></Field>
+      </div></section>
+    </fieldset>
+    {!readonly && <div className="consult-footer"><span><Check size={16} /> Alterações salvas automaticamente neste navegador</span><div className="row-actions"><button className="btn secondary" onClick={saved}>Salvar rascunho</button><button className="btn primary" onClick={finish}><CheckCircle2 size={17} /> Finalizar atendimento</button></div></div>}
+    {readonly && <p className="muted">Finalizado em {dateLabel(localDate(encounter.finishedAt))} às {timeLabel(encounter.finishedAt)}. Registro disponível para consulta.</p>}
+  </>
 }
-function TriageMeasurements({ triage }: { triage: Triage }) {
-  const measurements = [
-    { label: 'PA', value: triage.pressure ? `${triage.pressure} mmHg` : '' },
-    { label: 'Temperatura', value: triage.temperature ? `${triage.temperature} °C` : '' },
-    { label: 'FC', value: triage.heartRate ? `${triage.heartRate} bpm` : '' },
-    { label: 'FR', value: triage.respiratoryRate ? `${triage.respiratoryRate} irpm` : '' },
-    { label: 'SpO₂', value: triage.oxygenSaturation ? `${triage.oxygenSaturation}%` : '' },
-    { label: 'Peso', value: triage.weight ? `${triage.weight} kg` : '' },
-    { label: 'Altura', value: triage.height ? `${triage.height} cm` : '' },
-    { label: 'IMC', value: bmi(triage.weight, triage.height) !== '—' ? `${bmi(triage.weight, triage.height)} kg/m²` : '' },
-    {
-      label: `Glicemia${triage.bloodGlucoseMoment ? ` · ${bloodGlucoseMomentLabels[triage.bloodGlucoseMoment] ?? triage.bloodGlucoseMoment}` : ''}`,
-      value: triage.bloodGlucose ? `${triage.bloodGlucose} mg/dL` : '',
-    },
-  ].filter(measurement => measurement.value);
-  return measurements.length
-    ? <div className="vitals">{measurements.map(item => <span key={item.label}>{item.label} <strong>{item.value}</strong></span>)}</div>
-    : <p className="triage-no-measurements">Nenhuma medição registrada.</p>;
+
+function NewEncounterModal({ patients, initialPatient, onClose, onStart }: { patients: Patient[]; initialPatient: string; onClose: () => void; onStart: (id: string, type: string) => void }) {
+  const [patient, setPatient] = useState(initialPatient)
+  const [type, setType] = useState('Consulta agendada')
+  return <ModalShell title="Novo atendimento" subtitle="Selecione o paciente e o tipo de consulta" onClose={onClose}><form onSubmit={e => { e.preventDefault(); onStart(patient, type) }}><div className="modal-body stack">
+    <Field label="Paciente" required><select required value={patient} onChange={e => setPatient(e.target.value)}><option value="">Selecione um paciente</option>{patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+    <Field label="Tipo de atendimento" required><select value={type} onChange={e => setType(e.target.value)}>{encounterTypes.map(t => <option key={t}>{t}</option>)}</select></Field>
+    {!patients.length && <p className="muted">Cadastre um paciente antes de iniciar um atendimento.</p>}
+  </div><div className="modal-footer"><button type="button" className="btn secondary" onClick={onClose}>Cancelar</button><button disabled={!patients.length} className="btn primary">Iniciar atendimento <ArrowRight size={16} /></button></div></form></ModalShell>
+}
+
+function SettingsModal({ onClose, onExport, onImport, onRestore, onClear }: { onClose: () => void; onExport: () => void; onImport: (file: File) => void; onRestore: () => void; onClear: () => void }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  return <ModalShell title="Configurações" subtitle="Gerencie os dados de treinamento deste navegador" onClose={onClose}><div className="modal-body settings-list">
+    <div className="setting-item"><div><strong>Exportar dados</strong><p>Baixe um arquivo JSON com todos os registros.</p></div><button className="btn secondary small" onClick={onExport}><Download size={15} /> Exportar</button></div>
+    <div className="setting-item"><div><strong>Importar dados</strong><p>Substitua os registros por um backup JSON.</p></div><input hidden ref={inputRef} type="file" accept=".json,application/json" onChange={e => { const file = e.target.files?.[0]; if (file) onImport(file); e.target.value = '' }} /><button className="btn secondary small" onClick={() => inputRef.current?.click()}><Upload size={15} /> Importar</button></div>
+    <div className="setting-item"><div><strong>Restaurar dados fictícios</strong><p>Substitua os dados atuais pelos exemplos iniciais.</p></div><button className="btn secondary small" onClick={onRestore}>Restaurar</button></div>
+    <div className="setting-item"><div><strong>Limpar dados de treinamento</strong><p>Exclua todos os registros deste navegador.</p></div><button className="btn danger small" onClick={onClear}><Trash2 size={15} /> Limpar</button></div>
+  </div></ModalShell>
 }
 
 export default function App() {
-  const [initial] = useState(readInitial);
-  const [data, setData] = useState(initial.data);
-  const [notice, setNotice] = useState<Notice | null>(initial.error ? { text: initial.error, error: true } : null);
-  const [storageBlocked, setStorageBlocked] = useState(Boolean(initial.error));
-  const [page, setPage] = useState<Page>('painel');
-  const [selected, setSelected] = useState('');
-  const [search, setSearch] = useState('');
-  const [editing, setEditing] = useState<Patient | null>(null);
-  const [showPatientForm, setShowPatientForm] = useState(false);
-  const [showEncounterForm, setShowEncounterForm] = useState(false);
-  const [showAppointmentForm, setShowAppointmentForm] = useState(false);
-  const [queueDate, setQueueDate] = useState(today());
-  const [agendaDate, setAgendaDate] = useState(today());
-  const [queueSearch, setQueueSearch] = useState('');
-  const [activeAppointmentId, setActiveAppointmentId] = useState<string | null>(null);
-  const [weight, setWeight] = useState('');
-  const [height, setHeight] = useState('');
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [formKey, setFormKey] = useState(0);
-  const importRef = useRef<HTMLInputElement>(null);
-
-  const navigate = (next: Page, patientId?: string) => {
-    if (patientId !== undefined) setSelected(patientId);
-    setPage(next);
-    setMenuOpen(false);
-    setShowPatientForm(false);
-    setShowEncounterForm(false);
-    setShowAppointmentForm(false);
-    setActiveAppointmentId(null);
-    setFormKey(key => key + 1);
-    window.scrollTo(0, 0);
-  };
-  const save = (next: Database, message: string, importing = false) => {
-    if (storageBlocked && !importing) {
-      setNotice({ text: 'Os dados salvos não puderam ser lidos. Importe um backup válido antes de salvar.', error: true });
-      return false;
-    }
+  const [initial] = useState(() => { try { return { data: loadData(), error: '' } } catch (error) { return { data: clearData(), error: error instanceof Error ? error.message : 'Não foi possível carregar os dados locais.' } } })
+  const [data, setData] = useState<Data>(initial.data)
+  const [storageError, setStorageError] = useState(initial.error)
+  const [page, setPage] = useState<Page>('dashboard')
+  const [modal, setModal] = useState<Modal>(null)
+  const [selectedPatient, setSelectedPatient] = useState('')
+  const [selectedEncounter, setSelectedEncounter] = useState('')
+  const [patientDraft, setPatientDraft] = useState<Patient>(blankPatient)
+  const [vaccinationDraft, setVaccinationDraft] = useState<Vaccination>(blankVaccination)
+  const [query, setQuery] = useState('')
+  const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null)
+  const [sidebar, setSidebar] = useState(false)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const notify = (text: string, error = false) => { setToast({ text, error }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3500) }
+  const commit = (next: Data, success?: string, recovery = false) => {
+    if (initial.error && storageError && !recovery) { notify('Recupere os dados locais antes de fazer alterações.', true); return false }
+    try { saveData(next); setData(next); setStorageError(''); if (success) notify(success); return true }
+    catch { setStorageError('Não foi possível salvar os dados neste navegador. Verifique o espaço disponível e as permissões de armazenamento.'); notify('Erro ao salvar os dados locais.', true); return false }
+  }
+  const navigate = (next: Page) => { setPage(next); setSelectedEncounter(''); setQuery(''); setSidebar(false) }
+  const openPatient = (id: string) => { setSelectedPatient(id); setModal('record') }
+  const addPatient = () => { setPatientDraft(blankPatient()); setModal('patient') }
+  const editPatient = (p: Patient) => { setPatientDraft(p); setModal('patient') }
+  const savePatient = (p: Patient) => {
+    if (!p.name.trim()) { notify('Informe o nome do paciente.', true); return }
+    if (p.cpf && data.patients.some(item => item.id !== p.id && item.cpf && item.cpf.replace(/\D/g, '') === p.cpf.replace(/\D/g, ''))) { notify('Já existe um paciente com este CPF.', true); return }
+    if (p.cns && data.patients.some(item => item.id !== p.id && item.cns && item.cns.replace(/\D/g, '') === p.cns.replace(/\D/g, ''))) { notify('Já existe um paciente com este CNS.', true); return }
+    const exists = data.patients.some(item => item.id === p.id)
+    if (commit({ ...data, patients: exists ? data.patients.map(item => item.id === p.id ? p : item) : [...data.patients, p] }, exists ? 'Cadastro atualizado.' : 'Paciente cadastrado.')) setModal(null)
+  }
+  const deletePatient = (p: Patient) => {
+    if (!confirm(`Excluir ${p.name}? Os atendimentos, vacinas e agendamentos vinculados também serão excluídos.`)) return
+    commit({ patients: data.patients.filter(item => item.id !== p.id), encounters: data.encounters.filter(e => e.patientId !== p.id), vaccinations: data.vaccinations.filter(v => v.patientId !== p.id), appointments: data.appointments.filter(a => a.patientId !== p.id) }, 'Paciente e registros vinculados excluídos.')
+  }
+  const startModal = (id = '') => { setSelectedPatient(id); setModal('newEncounter') }
+  const startEncounter = (id: string, type: string) => {
+    const e = blankEncounter(id, type)
+    let updated = false
+    const appointments: Appointment[] = data.appointments.map(a => { if (!updated && a.patientId === id && a.date === today() && a.status === 'Agendado') { updated = true; return { ...a, status: 'Em atendimento' } }; return a })
+    if (commit({ ...data, appointments, encounters: [...data.encounters, e] }, 'Atendimento iniciado.')) { setModal(null); setPage('encounters'); setSelectedEncounter(e.id); setQuery('') }
+  }
+  const updateEncounter = (e: Encounter) => commit({ ...data, encounters: data.encounters.map(item => item.id === e.id ? e : item) })
+  const finishEncounter = (e: Encounter) => {
+    if (!confirm('Finalizar este atendimento? Após a finalização, o registro ficará disponível apenas para consulta.')) return
+    const finished = { ...e, status: 'Finalizado' as const, finishedAt: new Date().toISOString() }
+    let updated = false
+    const appointments: Appointment[] = data.appointments.map(a => { if (!updated && a.patientId === e.patientId && a.date === localDate(e.date) && a.status === 'Em atendimento') { updated = true; return { ...a, status: 'Finalizado' } }; return a })
+    commit({ ...data, appointments, encounters: data.encounters.map(item => item.id === e.id ? finished : item) }, 'Atendimento finalizado.')
+  }
+  const openEncounter = (id: string) => { setPage('encounters'); setSelectedEncounter(id); setQuery('') }
+  const addVaccination = (patientId = '') => { setVaccinationDraft({ ...blankVaccination(), patientId }); setModal('vaccination') }
+  const saveVaccination = (v: Vaccination) => {
+    const exists = data.vaccinations.some(item => item.id === v.id)
+    if (commit({ ...data, vaccinations: exists ? data.vaccinations.map(item => item.id === v.id ? v : item) : [...data.vaccinations, v] }, exists ? 'Vacinação atualizada.' : 'Vacinação registrada.')) setModal(null)
+  }
+  const exportData = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
+    const a = document.createElement('a'); a.href = url; a.download = `aps-simulada-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+    notify('Backup exportado.')
+  }
+  const importData = async (file: File) => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      setData(next);
-      setStorageBlocked(false);
-      setNotice({ text: message });
-      return true;
-    } catch {
-      setNotice({ text: 'Não foi possível salvar no navegador. Verifique o espaço disponível e as permissões de armazenamento.', error: true });
-      return false;
-    }
-  };
-  const download = () => {
-    if (storageBlocked) {
-      setNotice({ text: 'Não é possível exportar: os dados salvos não puderam ser lidos.', error: true });
-      return;
-    }
-    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url; link.download = `backup-simulador-aps-${today()}.json`; link.click();
-    URL.revokeObjectURL(url);
-    setNotice({ text: 'Backup exportado com sucesso.' });
-  };
-  const importBackup = async (file?: File) => {
-    if (!file) return;
-    try {
-      const parsed = parseDatabase(JSON.parse(await file.text()) as unknown);
-      if (!parsed) throw new Error('invalid');
-      if (!window.confirm('Importar este backup substituirá todos os dados atuais deste navegador. Deseja continuar?')) return;
-      if (save(parsed, 'Backup importado com sucesso.', true)) { setSelected(''); navigate('painel'); }
-    } catch {
-      setNotice({ text: 'Backup inválido. Selecione um arquivo JSON exportado pelo simulador.', error: true });
-    } finally {
-      if (importRef.current) importRef.current.value = '';
-    }
-  };
-  const submitPatient = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const patient: Patient = { id: editing?.id ?? id(), name: value(form, 'name'), birthDate: value(form, 'birthDate'), cpf: value(form, 'cpf'), cns: value(form, 'cns'), phone: value(form, 'phone'), sex: value(form, 'sex'), address: value(form, 'address') };
-    if (!patient.name) { setNotice({ text: 'Informe o nome do cidadão.', error: true }); return; }
-    const patients = editing ? data.patients.map(item => item.id === editing.id ? patient : item) : [...data.patients, patient];
-    if (save({ ...data, patients }, editing ? 'Cadastro atualizado com sucesso.' : 'Cidadão cadastrado com sucesso.')) {
-      setEditing(null); setShowPatientForm(false); setSelected(patient.id);
-    }
-  };
-  const submitAppointment = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const date = value(form, 'date');
-    if (date < nowLocal()) {
-      setNotice({ text: 'Escolha uma data e horário futuros para o agendamento.', error: true });
-      return;
-    }
-    const appointment: Appointment = {
-      id: id(),
-      patientId: value(form, 'patientId'),
-      date,
-      professional: value(form, 'professional'),
-      type: value(form, 'type'),
-      status: 'scheduled',
-    };
-    if (!data.patients.some(patient => patient.id === appointment.patientId)) {
-      setNotice({ text: 'Selecione um cidadão cadastrado.', error: true });
-      return;
-    }
-    if (!appointment.professional || !appointment.type) {
-      setNotice({ text: 'Informe o profissional e o tipo de atendimento.', error: true });
-      return;
-    }
-    const conflictingSlot = data.appointments.some(item =>
-      item.date === appointment.date &&
-      item.professional.toLocaleLowerCase('pt-BR') === appointment.professional.toLocaleLowerCase('pt-BR') &&
-      item.status !== 'cancelled' &&
-      item.status !== 'no-show',
-    );
-    if (conflictingSlot) {
-      setNotice({ text: 'Este profissional já possui um agendamento nesse horário.', error: true });
-      return;
-    }
-    if (save({ ...data, appointments: [...data.appointments, appointment] }, 'Agendamento registrado com sucesso.')) {
-      setShowAppointmentForm(false);
-    }
-  };
-  const changeAppointmentStatus = (appointment: Appointment, status: AppointmentStatus, message: string) => {
-    const appointments = data.appointments.map(item => item.id === appointment.id ? { ...item, status } : item);
-    return save({ ...data, appointments }, message);
-  };
-  const deletePatient = (patient: Patient) => {
-    if (!window.confirm(`Excluir ${patient.name} e todos os seus registros de escuta inicial, atendimento, vacinação e procedimentos? Esta ação não pode ser desfeita.`)) return;
-    const keep = <T extends { patientId: string }>(items: T[]) => items.filter(item => item.patientId !== patient.id);
-    if (save({ ...data, patients: data.patients.filter(item => item.id !== patient.id), triages: keep(data.triages), encounters: keep(data.encounters), vaccinations: keep(data.vaccinations), procedures: keep(data.procedures), appointments: keep(data.appointments) }, 'Cidadão e registros vinculados excluídos.')) {
-      if (selected === patient.id) setSelected('');
-    }
-  };
-  const submitRecord = (event: FormEvent<HTMLFormElement>, kind: 'triage' | 'encounter' | 'vaccination' | 'procedure') => {
-    event.preventDefault();
-    if (!data.patients.some(patient => patient.id === selected)) { setNotice({ text: 'Selecione um cidadão cadastrado.', error: true }); return; }
-    const form = new FormData(event.currentTarget);
-    const base = { id: id(), patientId: selected, date: kind === 'triage' || kind === 'encounter' ? nowLocal() : value(form, 'date') };
-    let next: Database;
-    if (kind === 'triage') {
-      const riskClassification = value(form, 'riskClassification');
-      if (!isTriageRisk(riskClassification)) {
-        setNotice({ text: 'Selecione uma classificação de risco para a escuta inicial.', error: true });
-        return;
-      }
-      const appointment = data.appointments.find(item => item.patientId === selected && item.status === 'present' && item.date.startsWith(today()));
-      next = {
-        ...data,
-        triages: [...data.triages, {
-          ...base,
-          complaint: value(form, 'complaint'),
-          pressure: value(form, 'pressure'),
-          temperature: value(form, 'temperature'),
-          weight: value(form, 'weight'),
-          height: value(form, 'height'),
-          heartRate: value(form, 'heartRate'),
-          respiratoryRate: value(form, 'respiratoryRate'),
-          oxygenSaturation: value(form, 'oxygenSaturation'),
-          bloodGlucose: value(form, 'bloodGlucose'),
-          bloodGlucoseMoment: value(form, 'bloodGlucoseMoment'),
-          riskClassification,
-          ...(appointment ? { appointmentId: appointment.id } : {}),
-        }],
-        appointments: appointment ? data.appointments.map(item => item.id === appointment.id ? { ...item, status: 'triaged' } : item) : data.appointments,
-      };
-    } else if (kind === 'encounter') {
-      const triage = byNewest(data.triages.filter(item => item.patientId === selected)).find(item =>
-        !data.encounters.some(encounter => encounter.patientId === selected && encounter.date >= item.date),
-      );
-      const appointmentId = activeAppointmentId && data.appointments.some(item => item.id === activeAppointmentId && item.patientId === selected)
-        ? activeAppointmentId
-        : triage?.appointmentId;
-      next = {
-        ...data,
-        encounters: [...data.encounters, { ...base, anamnesis: value(form, 'anamnesis'), exam: value(form, 'exam'), assessment: value(form, 'assessment'), diagnosis: value(form, 'diagnosis'), conduct: value(form, 'conduct') }],
-        appointments: appointmentId
-          ? data.appointments.map(item => item.id === appointmentId ? { ...item, status: 'completed' } : item)
-          : data.appointments,
-      };
-    } else if (kind === 'vaccination') {
-      next = { ...data, vaccinations: [...data.vaccinations, { ...base, vaccine: value(form, 'vaccine'), dose: value(form, 'dose'), batch: value(form, 'batch') }] };
-    } else {
-      next = { ...data, procedures: [...data.procedures, { ...base, procedure: value(form, 'procedure'), professional: value(form, 'professional'), notes: value(form, 'notes') }] };
-    }
-    if (save(next, `${kind === 'triage' ? 'Escuta inicial' : kind === 'encounter' ? 'Atendimento' : kind === 'vaccination' ? 'Vacinação' : 'Procedimento'} registrado com sucesso.`)) {
-      setFormKey(key => key + 1); setWeight(''); setHeight('');
-      if (kind === 'encounter') { setShowEncounterForm(false); setActiveAppointmentId(null); }
-    }
-  };
-  const currentPatient = data.patients.find(patient => patient.id === selected);
-  const patientName = (patientId: string) => data.patients.find(patient => patient.id === patientId)?.name ?? 'Cidadão não encontrado';
-  const todayTriages = data.triages.filter(item => item.date.startsWith(today()));
-  const todayEncounters = data.encounters.filter(item => item.date.startsWith(today()));
-  const pending = todayTriages.filter(triage => !data.encounters.some(encounter => encounter.patientId === triage.patientId && encounter.date >= triage.date));
-  const waitingCount = pending.length + data.appointments.filter(appointment => appointment.date.startsWith(today()) && appointment.status === 'present').length;
-  const matchesQueueSearch = (patientId: string) => {
-    const patient = data.patients.find(item => item.id === patientId);
-    return patient ? `${patient.name} ${patient.cpf} ${patient.cns}`.toLocaleLowerCase('pt-BR').includes(queueSearch.toLocaleLowerCase('pt-BR')) : false;
-  };
-  const queuedAppointments = data.appointments.filter(appointment =>
-    appointment.date.startsWith(queueDate) &&
-    ['scheduled', 'present', 'triaged'].includes(appointment.status) &&
-    matchesQueueSearch(appointment.patientId),
-  );
-  const queuedTriages = data.triages.filter(triage =>
-    triage.date.startsWith(queueDate) &&
-    !triage.appointmentId &&
-    !data.encounters.some(encounter => encounter.patientId === triage.patientId && encounter.date >= triage.date) &&
-    matchesQueueSearch(triage.patientId),
-  );
-  const filteredPatients = data.patients.filter(patient => `${patient.name} ${patient.cpf} ${patient.cns}`.toLocaleLowerCase('pt-BR').includes(search.toLocaleLowerCase('pt-BR')));
-
-  return <div className="app-shell">
-    <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
-      <div className="brand"><div className="brand-mark"><span>+</span></div><div><strong>e-SUS <span>APS</span></strong><small>SIMULADOR PEC</small></div><button className="mobile-close icon-button" onClick={() => setMenuOpen(false)} aria-label="Fechar menu"><X size={20} /></button></div>
-      <div className="sidebar-label">MENU PRINCIPAL</div>
-      <nav aria-label="Menu principal">{navigation.map((item, index) => <div key={item.id}>{index === 7 && <div className="sidebar-label sidebar-label-second">OUTROS MÓDULOS</div>}<button className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)}><item.icon size={19} strokeWidth={1.8} /><span>{item.label}</span>{page === item.id && <ChevronRight className="nav-chevron" size={16} />}</button></div>)}</nav>
-      <div className="sidebar-bottom"><div className="help-card"><div className="help-icon"><CircleHelp size={18} /></div><div><strong>Ambiente de prática</strong><p>Explore as funcionalidades com dados fictícios.</p></div></div><div className="sidebar-footer"><ShieldCheck size={16} /> Dados salvos neste navegador</div></div>
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!isData(parsed)) { notify('Arquivo inválido ou incompatível com o sistema.', true); return }
+      if (!confirm('Importar este backup e substituir todos os dados atuais?')) return
+      if (commit(parsed, 'Dados importados com sucesso.', true)) { setModal(null); setSelectedEncounter(''); setSelectedPatient(''); setPage('dashboard') }
+    } catch { notify('Não foi possível ler o arquivo JSON.', true) }
+  }
+  const reset = (restore: boolean) => {
+    if (!confirm(restore ? 'Restaurar os dados fictícios? Todos os dados atuais serão substituídos.' : 'Limpar todos os dados de treinamento? Esta ação não pode ser desfeita.')) return
+    if (commit(restore ? seedData() : clearData(), restore ? 'Dados fictícios restaurados.' : 'Dados de treinamento removidos.', true)) { setModal(null); setSelectedEncounter(''); setSelectedPatient(''); setPage('dashboard') }
+  }
+  const quick = (action: string) => { if (action === 'patient') addPatient(); else if (action === 'encounter') startModal(); else if (action === 'vaccination') addVaccination(); else navigate('patients') }
+  const patient = data.patients.find(p => p.id === selectedPatient)
+  const encounter = data.encounters.find(e => e.id === selectedEncounter)
+  const encounterPatient = data.patients.find(p => p.id === encounter?.patientId)
+  const navItems: { key: Page; label: string; icon: ReactNode }[] = [{ key: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={19} /> }, { key: 'patients', label: 'Pacientes', icon: <UsersRound size={19} /> }, { key: 'encounters', label: 'Atendimentos', icon: <ClipboardList size={19} /> }, { key: 'vaccinations', label: 'Vacinação', icon: <Syringe size={19} /> }]
+  return <div className="app">
+    {sidebar && <button className="sidebar-backdrop" aria-label="Fechar menu" onClick={() => setSidebar(false)} />}
+    <aside className={`sidebar ${sidebar ? 'open' : ''}`}><div className="brand"><div className="brand-mark"><Activity size={25} strokeWidth={2.2} /></div><div><strong>APS <span>Simulada</span></strong><small>ATENÇÃO PRIMÁRIA À SAÚDE</small></div></div>
+      <div className="side-label">MENU PRINCIPAL</div><nav>{navItems.map(item => <button key={item.key} className={`nav-item ${page === item.key ? 'active' : ''}`} onClick={() => navigate(item.key)}>{item.icon}<span>{item.label}</span>{page === item.key && <ChevronRight className="nav-chevron" size={16} />}</button>)}</nav>
+      <div className="sidebar-bottom"><div className="side-divider" /><button className="settings-button" onClick={() => { setModal('settings'); setSidebar(false) }}><Settings size={19} /> Configurações</button><div className="professional"><div className="professional-avatar"><UserRound size={19} /></div><div><strong>Enfermeiro(a)</strong><small>UBS Simulada</small></div><ChevronDown size={15} /></div><div className="side-simulation">Enfermeiro(a) — Simulação</div></div>
     </aside>
-    {menuOpen && <button className="mobile-overlay" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}
-    <div className="main-shell">
-      <div className="simulation-bar"><ShieldCheck size={14} /> AMBIENTE DE SIMULAÇÃO <span>—</span> DADOS FICTÍCIOS <span className="simulation-extra">· Sem integração com o e-SUS oficial</span></div>
-      <header className="topbar"><div className="topbar-left"><button className="menu-toggle icon-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={21} /></button><div className="unit-icon"><Plus size={19} /></div><div><strong>UBS Jardim das Flores</strong><small>Unidade Básica de Saúde <span>•</span> CNES 0000000</small></div></div><div className="topbar-right"><span className="top-date"><CalendarDays size={16} /> {shortDate.format(new Date())}</span><div className="top-divider" /><div className="profile"><div className="profile-avatar">EF</div><div><strong>Enfermeiro(a)</strong><small>Profissional de saúde</small></div><ChevronDown size={16} /></div></div></header>
+    <div className="main-shell"><header className="topbar"><div className="top-left"><button className="icon-btn menu-toggle" onClick={() => setSidebar(true)} aria-label="Abrir menu"><Menu size={21} /></button><div className="breadcrumb"><span>APS Simulada</span><ChevronRight size={14} /><strong>{navItems.find(n => n.key === page)?.label}</strong></div></div>
+      <div className="top-right"><div className="top-search"><Search size={17} /><input placeholder="Buscar paciente..." value={query} onChange={e => { if (page !== 'patients') { setPage('patients'); setSelectedEncounter('') }; setQuery(e.target.value) }} /></div><span className="top-date">{dateLabel(today())}</span><div className="training-badge"><span /> AMBIENTE DE TREINAMENTO</div><button className="notification" aria-label="Notificações (simulação)" title="Notificações (simulação)"><Bell size={20} /><i /></button><div className="top-profile"><div className="professional-avatar"><UserRound size={17} /></div><div><strong>Enfermeiro(a)</strong><small>UBS Simulada</small></div></div></div></header>
       <main className="content">
-        {notice && <div role="status" className={`notice ${notice.error ? 'notice-error' : ''}`}><span>{notice.text}</span><button onClick={() => setNotice(null)} aria-label="Fechar aviso"><X size={17} /></button></div>}
-        {page === 'painel' && <>
-          <div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Visão geral</strong></div>
-          <PageHeading eyebrow="UNIDADE BÁSICA DE SAÚDE" title="Painel da unidade" description="Acompanhamento dos cidadãos e das atividades da equipe." action={<div className="heading-date"><CalendarDays size={17} /> {shortDate.format(new Date())}</div>} />
-          <div className="overview-heading"><div><h2>Resumo do dia</h2><p>Indicadores das atividades registradas nesta unidade.</p></div><span><span className="live-dot" /> Dados locais</span></div>
-          <div className="stats-grid">
-            <Stat icon={UsersRound} color="blue" label="Cidadãos cadastrados" number={data.patients.length} detail="Total de cadastros" onClick={() => navigate('cidadaos')} />
-            <Stat icon={HeartPulse} color="teal" label="Escutas iniciais hoje" number={todayTriages.length} detail="Registros realizados hoje" onClick={() => navigate('acolhimento')} />
-            <Stat icon={Stethoscope} color="purple" label="Atendimentos hoje" number={todayEncounters.length} detail="Atendimentos finalizados" onClick={() => navigate('atendimento')} />
-            <Stat icon={Clock3} color="orange" label="Aguardando atendimento" number={waitingCount} detail="Na fila da unidade" onClick={() => navigate('atendimento')} />
-          </div>
-          <div className="dashboard-grid"><section className="card recent-card"><SectionTitle title="Atividades recentes" subtitle="Últimas escutas iniciais registradas na unidade" action={<button className="text-link" onClick={() => navigate('acolhimento')}>Ver escutas iniciais <ArrowRight size={15} /></button>} />
-            {data.triages.length ? <div className="table-wrap"><table><thead><tr><th>CIDADÃO</th><th>MOTIVO DA PROCURA</th><th>RISCO</th><th>DATA</th><th>STATUS</th><th /></tr></thead><tbody>{byNewest(data.triages).slice(0, 5).map((triage, index) => { const done = data.encounters.some(encounter => encounter.patientId === triage.patientId && encounter.date >= triage.date); return <tr key={triage.id}><td><button className="person-cell" onClick={() => navigate('prontuario', triage.patientId)}><Avatar name={patientName(triage.patientId)} index={index} /><span><strong>{patientName(triage.patientId)}</strong><small>Prontuário do cidadão</small></span></button></td><td>{triage.complaint}</td><td><TriageRiskBadge risk={triage.riskClassification} /></td><td>{formatDate(triage.date)}</td><td><span className={`status ${done ? 'status-done' : 'status-wait'}`}><span />{done ? 'Finalizado' : 'Aguardando'}</span></td><td><button className="table-action" onClick={() => navigate('prontuario', triage.patientId)} aria-label={`Ver prontuário de ${patientName(triage.patientId)}`}><MoreHorizontal size={19} /></button></td></tr>; })}</tbody></table></div> : <Empty text="Nenhuma escuta inicial registrada ainda." />}
-          </section><section className="card quick-card"><SectionTitle title="Acesso rápido" subtitle="O que você precisa fazer?" /><div className="quick-list"><Quick icon={UsersRound} color="blue" title="Cadastrar cidadão" description="Adicionar um novo cadastro" onClick={() => { setEditing(null); setShowPatientForm(true); setPage('cidadaos'); }} /><Quick icon={HeartPulse} color="teal" title="Nova escuta inicial" description="Registrar motivo e medições" onClick={() => navigate('acolhimento')} /><Quick icon={Stethoscope} color="purple" title="Iniciar atendimento" description="Registrar atendimento de enfermagem" onClick={() => navigate('atendimento')} /><Quick icon={FileHeart} color="orange" title="Consultar prontuário" description="Acessar histórico do cidadão" onClick={() => navigate('prontuario')} /></div></section></div>
-          <div className="dashboard-note"><div className="note-icon"><ShieldCheck size={19} /></div><p><strong>Este é um ambiente de simulação.</strong> Utilize apenas dados fictícios. As informações ficam armazenadas somente neste navegador.</p><button onClick={download}>Fazer backup <ArrowUpRight size={15} /></button></div>
-        </>}
-        {page === 'cidadaos' && <>
-          <div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Cidadãos</strong></div>
-          <PageHeading eyebrow="CADASTROS" title="Cidadãos" description="Gerencie os cadastros dos cidadãos da unidade." action={!showPatientForm && <button className="button primary" onClick={() => { setEditing(null); setShowPatientForm(true); }}><Plus size={17} /> Novo cidadão</button>} />
-          {showPatientForm ? <section className="card form-card"><SectionTitle title={editing ? 'Editar cidadão' : 'Novo cidadão'} subtitle="Preencha os dados fictícios para o cadastro." /><form onSubmit={submitPatient} key={editing?.id ?? 'new'}><div className="form-grid"><Field label="Nome completo" required><input name="name" defaultValue={editing?.name} required maxLength={150} placeholder="Nome do cidadão" /></Field><Field label="Data de nascimento" required><input name="birthDate" type="date" defaultValue={editing?.birthDate} max={today()} required /></Field><Field label="CPF"><input name="cpf" defaultValue={editing?.cpf} placeholder="000.000.000-00" /></Field><Field label="Cartão Nacional de Saúde (CNS)"><input name="cns" defaultValue={editing?.cns} placeholder="Número do CNS" /></Field><Field label="Telefone"><input name="phone" defaultValue={editing?.phone} placeholder="(00) 00000-0000" /></Field><Field label="Sexo"><select name="sex" defaultValue={editing?.sex ?? ''}><option value="">Selecione</option><option>Feminino</option><option>Masculino</option><option>Outro</option><option>Não informado</option></select></Field><div className="span-2"><Field label="Endereço"><input name="address" defaultValue={editing?.address} placeholder="Rua, número e bairro" /></Field></div></div><div className="form-actions"><button type="button" className="button secondary" onClick={() => { setShowPatientForm(false); setEditing(null); }}>Cancelar</button><button className="button primary"><Check size={17} /> Salvar cadastro</button></div></form></section> : <section className="card list-card"><SectionTitle title="Cidadãos cadastrados" subtitle={`${data.patients.length} cidadão(ãos) no total`} /><div className="search-box"><Search size={18} /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar por nome, CPF ou CNS" aria-label="Buscar cidadãos" /></div>{filteredPatients.length ? <div className="table-wrap"><table><thead><tr><th>CIDADÃO</th><th>NASCIMENTO</th><th>CPF</th><th>TELEFONE</th><th>AÇÕES</th></tr></thead><tbody>{filteredPatients.map((patient, index) => <tr key={patient.id}><td><button className="person-cell" onClick={() => navigate('prontuario', patient.id)}><Avatar name={patient.name} index={index} /><span><strong>{patient.name}</strong><small>{patient.cns ? `CNS ${patient.cns}` : 'CNS não informado'}</small></span></button></td><td>{formatDate(patient.birthDate)}</td><td>{patient.cpf || '—'}</td><td>{patient.phone || '—'}</td><td><div className="row-actions"><button onClick={() => navigate('prontuario', patient.id)} title="Ver prontuário" aria-label={`Ver prontuário de ${patient.name}`}><FileHeart size={17} /></button><button onClick={() => { setEditing(patient); setShowPatientForm(true); }} title="Editar" aria-label={`Editar ${patient.name}`}><Pencil size={17} /></button><button onClick={() => deletePatient(patient)} title="Excluir" aria-label={`Excluir ${patient.name}`}><Trash2 size={17} /></button></div></td></tr>)}</tbody></table></div> : <Empty text="Nenhum cidadão encontrado." />}</section>}
-        </>}
-        {page === 'acolhimento' && <>
-          <div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Escuta inicial</strong></div>
-          <PageHeading eyebrow="CUIDADO AO CIDADÃO" title="Escuta inicial" description="Registre o motivo da procura, a classificação de risco e as medições realizadas." />
-          <section className="card form-card">
-            <SectionTitle title="Nova escuta inicial" subtitle="Informe o motivo e a classificação de risco. As medições são opcionais, conforme avaliação profissional." />
-            <form key={formKey} onSubmit={event => submitRecord(event, 'triage')}>
-              <PatientSelect patients={data.patients} selected={selected} onChange={setSelected} />
-              {currentPatient && <p className="triage-patient-context"><strong>{currentPatient.name}</strong> · {age(currentPatient.birthDate)} · {currentPatient.sex || 'Sexo não informado'}</p>}
-              <Field label="Motivo da procura / queixa principal" required><textarea name="complaint" required placeholder="Registre o que o cidadão relata, incluindo sinais e sintomas percebidos." rows={3} /></Field>
-              <Field label="Classificação de risco" required>
-                <select name="riskClassification" defaultValue="" required>
-                  <option value="">Selecione a classificação</option>
-                  {triageRiskOptions.map(risk => <option key={risk.value} value={risk.value}>{risk.label}</option>)}
-                </select>
-              </Field>
-              <h3 className="form-subtitle"><Activity size={18} /> Sinais vitais</h3>
-              <div className="form-grid three">
-                <Field label="Pressão arterial (mmHg)"><input name="pressure" pattern="[0-9]{2,3}/[0-9]{2,3}" placeholder="Ex.: 120/80" title="Informe no formato 120/80" /></Field>
-                <Field label="Temperatura (°C)"><input name="temperature" type="number" step="0.1" min="30" max="45" placeholder="Ex.: 36,5" /></Field>
-                <Field label="Frequência cardíaca (bpm)"><input name="heartRate" type="number" min="1" max="300" placeholder="Ex.: 80" /></Field>
-                <Field label="Frequência respiratória (irpm)"><input name="respiratoryRate" type="number" min="1" max="100" placeholder="Ex.: 18" /></Field>
-                <Field label="Saturação de O₂ (%)"><input name="oxygenSaturation" type="number" min="1" max="100" placeholder="Ex.: 98" /></Field>
-              </div>
-              <h3 className="form-subtitle">Medidas antropométricas</h3>
-              <div className="form-grid three">
-                <Field label="Peso (kg)"><input name="weight" type="number" step="0.1" min="0.1" max="500" value={weight} onChange={event => setWeight(event.target.value)} placeholder="Ex.: 70" /></Field>
-                <Field label="Altura (cm)"><input name="height" type="number" step="0.1" min="1" max="250" value={height} onChange={event => setHeight(event.target.value)} placeholder="Ex.: 170" /></Field>
-                <Field label="IMC calculado"><div className="calculated">{bmi(weight, height)} <small>kg/m²</small></div></Field>
-              </div>
-              <h3 className="form-subtitle">Glicemia capilar</h3>
-              <div className="form-grid three">
-                <Field label="Glicemia capilar (mg/dL)"><input name="bloodGlucose" type="number" min="1" max="1000" placeholder="Ex.: 100" /></Field>
-                <Field label="Momento da glicemia">
-                  <select name="bloodGlucoseMoment" defaultValue="">
-                    <option value="">Não informado</option>
-                    <option value="fasting">Jejum</option>
-                    <option value="pre-prandial">Pré-prandial</option>
-                    <option value="post-prandial">Pós-prandial</option>
-                    <option value="casual">Casual</option>
-                  </select>
-                </Field>
-              </div>
-              <div className="form-actions"><button className="button primary"><Check size={17} /> Salvar escuta inicial</button></div>
-            </form>
-          </section>
-        </>}
-        {page === 'atendimento' && <>
-          <div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Lista de atendimentos</strong></div>
-          <PageHeading eyebrow="CUIDADO AO CIDADÃO" title={showEncounterForm ? 'Atendimento de enfermagem' : 'Lista de atendimentos'} description={showEncounterForm ? 'Registre a consulta no formato SOAP e finalize o atendimento.' : 'Acompanhe os cidadãos agendados e a demanda espontânea da unidade.'} />
-          {showEncounterForm ? <section className="card form-card">
-            <SectionTitle title="Consulta de enfermagem" subtitle="Registre o atendimento e o plano de cuidados." action={<button className="button secondary" onClick={() => { setShowEncounterForm(false); setActiveAppointmentId(null); }}>Voltar à lista</button>} />
-            {currentPatient && <div className="patient-summary encounter-summary">
-              <div className="patient-summary-top"><Avatar name={currentPatient.name} /><div><h2>{currentPatient.name}</h2><p>{age(currentPatient.birthDate)} · {currentPatient.sex || 'Sexo não informado'} · CNS {currentPatient.cns || 'não informado'}</p></div></div>
-              {(() => {
-                const triage = byNewest(data.triages.filter(item => item.patientId === currentPatient.id))[0];
-                return triage ? <>
-                  <div className="triage-summary-heading"><span>Escuta inicial · {formatDate(triage.date)}</span><TriageRiskBadge risk={triage.riskClassification} /></div>
-                  <TriageMeasurements triage={triage} />
-                </> : <p className="encounter-hint">Nenhuma escuta inicial registrada para este cidadão.</p>;
-              })()}
-            </div>}
-            <form key={formKey} onSubmit={event => submitRecord(event, 'encounter')}>
-              <PatientSelect patients={data.patients} selected={selected} onChange={setSelected} />
-              <h3 className="form-subtitle">S · Subjetivo</h3><Field label="Relato e motivo da consulta" required><textarea name="anamnesis" rows={3} required placeholder="Registre o que o cidadão relata e suas necessidades." /></Field>
-              <h3 className="form-subtitle">O · Objetivo</h3><Field label="Exame físico e dados observados" required><textarea name="exam" rows={3} required placeholder="Registre achados observáveis e informações relevantes." /></Field>
-              <h3 className="form-subtitle">A · Avaliação</h3><div className="form-grid"><Field label="Avaliação de enfermagem" required><textarea name="assessment" rows={3} required placeholder="Registre sua avaliação do caso." /></Field><Field label="Problemas/condições (CIAP-2 ou CID-10, se aplicável)"><textarea name="diagnosis" rows={3} placeholder="Informe o código e a descrição, quando conhecidos." /></Field></div>
-              <h3 className="form-subtitle">P · Plano</h3><Field label="Plano de cuidados, condutas e orientações" required><textarea name="conduct" rows={4} required placeholder="Registre os cuidados, orientações e próximos passos acordados." /></Field>
-              <div className="form-actions"><button className="button primary"><Check size={17} /> Salvar e finalizar atendimento</button></div>
-            </form>
-          </section> : <section className="card list-card">
-            <SectionTitle title="Aguardando atendimento" subtitle="Agendados presentes e cidadãos com escuta inicial pendente." />
-            <div className="worklist-filters"><Field label="Data"><input type="date" value={queueDate} onChange={event => setQueueDate(event.target.value)} /></Field><div className="search-box"><Search size={18} /><input value={queueSearch} onChange={event => setQueueSearch(event.target.value)} placeholder="Buscar por nome, CPF ou CNS" aria-label="Buscar na lista de atendimentos" /></div></div>
-            {queuedAppointments.length || queuedTriages.length ? <div className="worklist-list">
-              {byOldest(queuedAppointments).map(appointment => {
-                const patient = data.patients.find(item => item.id === appointment.patientId);
-                if (!patient) return null;
-                const startEncounter = () => { setSelected(patient.id); setActiveAppointmentId(appointment.id); setShowEncounterForm(true); setFormKey(key => key + 1); };
-                return <article className="queue-row" key={appointment.id}><span className="queue-time">{appointment.date.slice(11, 16)}</span><Avatar name={patient.name} /><div className="queue-person"><strong>{patient.name}</strong><small>{appointment.type} · {appointment.professional}</small></div><span className={`status ${appointment.status === 'triaged' ? 'status-triaged' : appointment.status === 'present' ? 'status-present' : 'status-wait'}`}><span />{appointmentStatusLabels[appointment.status]}</span><div className="queue-actions">{appointment.status === 'scheduled' && <button className="button secondary" onClick={() => changeAppointmentStatus(appointment, 'present', 'Presença registrada; cidadão incluído na fila.')}>Registrar chegada</button>}{appointment.status === 'present' && <button className="button primary" onClick={() => navigate('acolhimento', patient.id)}>Fazer escuta inicial</button>}{appointment.status === 'triaged' && <button className="button primary" onClick={startEncounter}>Atender</button>}</div></article>;
-              })}
-              {byOldest(queuedTriages).map(triage => {
-                const patient = data.patients.find(item => item.id === triage.patientId);
-                if (!patient) return null;
-                return <article className="queue-row" key={triage.id}><span className="queue-time">{triage.date.slice(11, 16)}</span><Avatar name={patient.name} /><div className="queue-person"><strong>{patient.name}</strong><small>Demanda espontânea · Escuta inicial registrada</small><TriageRiskBadge risk={triage.riskClassification} /></div><span className="status status-triaged"><span />Aguardando consulta</span><div className="queue-actions"><button className="button primary" onClick={() => { setSelected(patient.id); setActiveAppointmentId(null); setShowEncounterForm(true); setFormKey(key => key + 1); }}>Atender</button></div></article>;
-              })}
-            </div> : <Empty text="Nenhum atendimento aguardando nesta data." />}
-          </section>}
-        </>}
-        {page === 'vacinacao' && <><div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Vacinação</strong></div><PageHeading eyebrow="CUIDADO AO CIDADÃO" title="Vacinação" description="Registre aplicações e consulte o histórico de vacinação." /><section className="card form-card"><SectionTitle title="Registrar vacinação" subtitle="Os registros são vinculados ao prontuário." /><form key={formKey} onSubmit={event => submitRecord(event, 'vaccination')}><PatientSelect patients={data.patients} selected={selected} onChange={setSelected} /><div className="form-grid"><Field label="Nome da vacina" required><input name="vaccine" required placeholder="Ex.: Influenza" /></Field><Field label="Dose" required><input name="dose" required placeholder="Ex.: 1ª dose" /></Field><Field label="Lote" required><input name="batch" required placeholder="Número do lote" /></Field><Field label="Data de aplicação" required><input name="date" type="date" defaultValue={today()} required /></Field></div><div className="form-actions"><button className="button primary"><Check size={17} /> Salvar vacinação</button></div></form></section><History title="Histórico de vacinação" selected={selected} items={byNewest(data.vaccinations.filter(item => item.patientId === selected)).map(item => ({ id: item.id, title: item.vaccine, detail: `Dose: ${item.dose} · Lote: ${item.batch}`, date: item.date }))} /></>}
-        {page === 'procedimentos' && <><div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Procedimentos</strong></div><PageHeading eyebrow="CUIDADO AO CIDADÃO" title="Procedimentos" description="Registre procedimentos realizados e consulte o histórico." /><section className="card form-card"><SectionTitle title="Registrar procedimento" subtitle="Os registros são vinculados ao prontuário." /><form key={formKey} onSubmit={event => submitRecord(event, 'procedure')}><PatientSelect patients={data.patients} selected={selected} onChange={setSelected} /><div className="form-grid"><Field label="Procedimento" required><select name="procedure" required defaultValue=""><option value="">Selecione um procedimento</option>{procedures.map(item => <option key={item}>{item}</option>)}</select></Field><Field label="Data e horário" required><input name="date" type="datetime-local" defaultValue={nowLocal()} required /></Field><div className="span-2"><Field label="Profissional responsável" required><input name="professional" required placeholder="Nome do profissional" /></Field></div><div className="span-2"><Field label="Observações"><textarea name="notes" rows={3} placeholder="Informações adicionais sobre o procedimento" /></Field></div></div><div className="form-actions"><button className="button primary"><Check size={17} /> Salvar procedimento</button></div></form></section><History title="Histórico de procedimentos" selected={selected} items={byNewest(data.procedures.filter(item => item.patientId === selected)).map(item => ({ id: item.id, title: item.procedure, detail: `Profissional: ${item.professional}${item.notes ? ` · ${item.notes}` : ''}`, date: item.date }))} /></>}
-        {page === 'prontuario' && <>
-          <div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Prontuário</strong></div>
-          <PageHeading eyebrow="CUIDADO AO CIDADÃO" title="Prontuário" description="Consulte os dados e o histórico de cuidado do cidadão." />
-          <section className="card form-card select-card"><PatientSelect patients={data.patients} selected={selected} onChange={setSelected} /></section>
-          {currentPatient ? <>
-            <section className="card patient-summary">
-              <div className="patient-summary-top">
-                <Avatar name={currentPatient.name} />
-                <div><h2>{currentPatient.name}</h2><p>{age(currentPatient.birthDate)} · {currentPatient.sex || 'Sexo não informado'}</p></div>
-                <button className="button secondary" onClick={() => { setEditing(currentPatient); setShowPatientForm(true); setPage('cidadaos'); }}><Pencil size={16} /> Editar cadastro</button>
-              </div>
-              <div className="patient-details">
-                <div><small>DATA DE NASCIMENTO</small><strong>{formatDate(currentPatient.birthDate)}</strong></div>
-                <div><small>CPF</small><strong>{currentPatient.cpf || 'Não informado'}</strong></div>
-                <div><small>CNS</small><strong>{currentPatient.cns || 'Não informado'}</strong></div>
-                <div><small>TELEFONE</small><strong>{currentPatient.phone || 'Não informado'}</strong></div>
-                <div><small>ENDEREÇO</small><strong>{currentPatient.address || 'Não informado'}</strong></div>
-              </div>
-            </section>
-            <section className="card history-card">
-              <SectionTitle title="Histórico de atendimentos" subtitle="Evoluções registradas para este cidadão" />
-              {data.encounters.filter(item => item.patientId === selected).length
-                ? byNewest(data.encounters.filter(item => item.patientId === selected)).map(item => <article className="record" key={item.id}>
-                  <div className="record-heading"><span className="record-icon purple"><Stethoscope size={18} /></span><div><strong>Atendimento de enfermagem</strong><small>{formatDate(item.date)}</small></div><span className="status status-done"><span />Finalizado</span></div>
-                  <div className="record-body"><RecordText label="Anamnese" text={item.anamnesis} /><RecordText label="Exame físico" text={item.exam} /><RecordText label="Avaliação" text={item.assessment} /><RecordText label="Diagnóstico" text={item.diagnosis} /><RecordText label="Condutas e orientações" text={item.conduct} /></div>
-                </article>)
-                : <Empty text="Nenhum atendimento registrado." />}
-            </section>
-            <section className="card history-card">
-              <SectionTitle title="Escutas iniciais e medições" subtitle="Motivo da procura, classificação de risco e dados registrados" />
-              {data.triages.filter(item => item.patientId === selected).length
-                ? byNewest(data.triages.filter(item => item.patientId === selected)).map(item => <article className="record" key={item.id}>
-                  <div className="record-heading">
-                    <span className="record-icon teal"><HeartPulse size={18} /></span>
-                    <div><strong>Escuta inicial</strong><small>{formatDate(item.date)}</small></div>
-                    <TriageRiskBadge risk={item.riskClassification} />
-                  </div>
-                  <div className="record-body">
-                    <RecordText label="Motivo da procura / queixa principal" text={item.complaint} />
-                    <TriageMeasurements triage={item} />
-                  </div>
-                </article>)
-                : <Empty text="Nenhuma escuta inicial registrada." />}
-            </section>
-            <History title="Vacinações" selected={selected} items={byNewest(data.vaccinations.filter(item => item.patientId === selected)).map(item => ({ id: item.id, title: item.vaccine, detail: `Dose: ${item.dose} · Lote: ${item.batch}`, date: item.date }))} />
-            <History title="Procedimentos" selected={selected} items={byNewest(data.procedures.filter(item => item.patientId === selected)).map(item => ({ id: item.id, title: item.procedure, detail: `Profissional: ${item.professional}${item.notes ? ` · ${item.notes}` : ''}`, date: item.date }))} />
-          </> : <section className="card"><Empty text="Selecione um cidadão para consultar o prontuário." /></section>}
-        </>}
-        {page === 'agendamentos' && <>
-          <div className="breadcrumb">Início <ChevronRight size={14} /> <strong>Agenda</strong></div>
-          <PageHeading eyebrow="ORGANIZAÇÃO DO CUIDADO" title="Agenda da unidade" description="Agende consultas e acompanhe a chegada dos cidadãos." action={!showAppointmentForm && <button className="button primary" onClick={() => setShowAppointmentForm(true)}><Plus size={17} /> Novo agendamento</button>} />
-          {showAppointmentForm ? <section className="card form-card">
-            <SectionTitle title="Novo agendamento" subtitle="Agendamento local para o ambiente de simulação." />
-            <form onSubmit={submitAppointment}>
-              <Field label="Cidadão" required><select name="patientId" required defaultValue=""><option value="">Selecione um cidadão</option>{data.patients.map(patient => <option key={patient.id} value={patient.id}>{patient.name}{patient.cns ? ` · CNS ${patient.cns}` : ''}</option>)}</select></Field>
-              <div className="form-grid">
-                <Field label="Data e horário" required><input name="date" type="datetime-local" min={nowLocal().slice(0, 16)} defaultValue={agendaDate > today() ? `${agendaDate}T09:00` : nowLocal().slice(0, 16)} required /></Field>
-                <Field label="Tipo de atendimento" required><select name="type" defaultValue="Consulta de enfermagem"><option>Consulta de enfermagem</option><option>Retorno</option><option>Demanda programada</option><option>Procedimento</option></select></Field>
-                <Field label="Profissional responsável" required><input name="professional" defaultValue="Enfermeiro(a)" required maxLength={100} /></Field>
-              </div>
-              <div className="form-actions"><button type="button" className="button secondary" onClick={() => setShowAppointmentForm(false)}>Cancelar</button><button className="button primary"><Check size={17} /> Salvar agendamento</button></div>
-            </form>
-          </section> : <section className="card list-card">
-            <SectionTitle title="Agendamentos" subtitle={`${data.appointments.filter(item => item.date.startsWith(agendaDate)).length} registro(s) na data selecionada.`} />
-            <div className="agenda-tools"><Field label="Data"><input type="date" value={agendaDate} onChange={event => setAgendaDate(event.target.value)} /></Field></div>
-            {data.appointments.filter(item => item.date.startsWith(agendaDate)).length ? <div className="table-wrap"><table><thead><tr><th>HORÁRIO</th><th>CIDADÃO</th><th>ATENDIMENTO</th><th>PROFISSIONAL</th><th>SITUAÇÃO</th><th>AÇÕES</th></tr></thead><tbody>
-              {byOldest(data.appointments.filter(item => item.date.startsWith(agendaDate))).map(appointment => {
-                const patient = data.patients.find(item => item.id === appointment.patientId);
-                if (!patient) return null;
-                return <tr key={appointment.id}><td>{appointment.date.slice(11, 16)}</td><td><button className="person-cell" onClick={() => navigate('prontuario', patient.id)}><Avatar name={patient.name} /><span><strong>{patient.name}</strong><small>{patient.cns ? `CNS ${patient.cns}` : 'CNS não informado'}</small></span></button></td><td>{appointment.type}</td><td>{appointment.professional}</td><td><span className={`status ${appointment.status === 'completed' ? 'status-done' : appointment.status === 'triaged' ? 'status-triaged' : appointment.status === 'present' ? 'status-present' : 'status-wait'}`}><span />{appointmentStatusLabels[appointment.status]}</span></td><td><div className="row-actions agenda-actions">
-                  {appointment.status === 'scheduled' && <><button className="agenda-action" onClick={() => { if (changeAppointmentStatus(appointment, 'present', 'Presença registrada; cidadão incluído na fila.')) navigate('atendimento', patient.id); }}>Registrar chegada</button>{appointment.date < nowLocal() && <button className="agenda-action" onClick={() => changeAppointmentStatus(appointment, 'no-show', 'Agendamento marcado como não compareceu.')}>Não compareceu</button>}<button className="agenda-action danger" onClick={() => { if (window.confirm(`Cancelar o agendamento de ${patient.name}?`)) changeAppointmentStatus(appointment, 'cancelled', 'Agendamento cancelado.'); }}>Cancelar</button></>}
-                  {appointment.status === 'present' && <button className="agenda-action" onClick={() => navigate('acolhimento', patient.id)}>Fazer escuta inicial</button>}
-                  {appointment.status === 'triaged' && <button className="agenda-action" onClick={() => { navigate('atendimento', patient.id); setActiveAppointmentId(appointment.id); setShowEncounterForm(true); }}>Atender</button>}
-                </div></td></tr>;
-              })}
-            </tbody></table></div> : <Empty text="Nenhum agendamento nesta data." />}
-          </section>}
-        </>}
-        {(['medicamentos', 'relatorios'] as Page[]).includes(page) && <><div className="breadcrumb">Início <ChevronRight size={14} /> <strong>{navigation.find(item => item.id === page)?.label}</strong></div><PageHeading eyebrow="OUTROS MÓDULOS" title={navigation.find(item => item.id === page)?.label ?? ''} description="Conheça os módulos disponíveis no ambiente de simulação." /><section className="card illustrative"><div className="illustrative-icon">{page === 'medicamentos' ? <Pill size={30} /> : <BarChart3 size={30} />}</div><h2>Uma visão ilustrativa</h2><p>Este módulo é apenas demonstrativo e não possui funcionalidades implementadas neste simulador.</p><button className="button secondary" onClick={() => navigate('painel')}>Voltar para visão geral</button></section></>}
-        <footer className="footer"><span>Simulador e-SUS APS <span>·</span> Ambiente de aprendizado</span><span>Dados fictícios, cuidado real com a privacidade.</span></footer>
+        {storageError && <div className="storage-error"><strong>Problema no armazenamento local.</strong> {storageError} <button onClick={() => setModal('settings')}>Abrir configurações</button></div>}
+        {page === 'dashboard' && <Dashboard data={data} navigate={navigate} openPatient={openPatient} openEncounter={openEncounter} quick={quick} />}
+        {page === 'patients' && <PatientsPage data={data} query={query} setQuery={setQuery} openPatient={openPatient} editPatient={editPatient} deletePatient={deletePatient} addPatient={addPatient} />}
+        {page === 'encounters' && (encounter && encounterPatient ? <Consultation encounter={encounter} patient={encounterPatient} update={updateEncounter} back={() => setSelectedEncounter('')} finish={() => finishEncounter(encounter)} saved={() => { commit(data, 'Rascunho salvo.') }} /> : <EncountersPage data={data} query={query} setQuery={setQuery} openEncounter={openEncounter} add={() => startModal()} />)}
+        {page === 'vaccinations' && <VaccinationsPage data={data} query={query} setQuery={setQuery} add={() => addVaccination()} edit={v => { setVaccinationDraft(v); setModal('vaccination') }} remove={v => { if (confirm(`Excluir o registro de ${v.vaccine} de ${patientName(data, v.patientId)}?`)) commit({ ...data, vaccinations: data.vaccinations.filter(item => item.id !== v.id) }, 'Registro de vacinação excluído.') }} />}
+        <footer className="page-footer"><span><ShieldCheck size={15} /> Sistema de treinamento. Dados fictícios. Não destinado ao atendimento real de pacientes.</span><span>APS Simulada <i>•</i> Atenção Primária à Saúde</span></footer>
       </main>
-      <div className="backup-dock"><button onClick={download} title="Exportar backup"><ArrowDownToLine size={15} /> Exportar backup</button><button onClick={() => importRef.current?.click()} title="Importar backup"><Upload size={15} /> Importar</button><input ref={importRef} type="file" accept=".json,application/json" hidden onChange={event => void importBackup(event.target.files?.[0])} /></div>
     </div>
-  </div>;
-}
-
-function Stat({ icon: Icon, color, label, number, detail, onClick }: { icon: LucideIcon; color: string; label: string; number: number; detail: string; onClick: () => void }) {
-  return <button className="card stat" onClick={onClick}><div className="stat-top"><span className={`stat-icon ${color}`}><Icon size={21} /></span><ArrowUpRight size={17} /></div><span className="stat-label">{label}</span><strong>{String(number).padStart(2, '0')}</strong><small>{detail}</small></button>;
-}
-function Quick({ icon: Icon, color, title, description, onClick }: { icon: LucideIcon; color: string; title: string; description: string; onClick: () => void }) {
-  return <button className="quick-item" onClick={onClick}><span className={`quick-icon ${color}`}><Icon size={19} /></span><span><strong>{title}</strong><small>{description}</small></span><ChevronRight size={17} /></button>;
-}
-function RecordText({ label, text }: { label: string; text: string }) {
-  return <div className="record-text"><strong>{label}</strong><p>{text || '—'}</p></div>;
-}
-function History({ title, selected, items }: { title: string; selected: string; items: { id: string; title: string; detail: string; date: string }[] }) {
-  return <section className="card history-card"><SectionTitle title={title} subtitle="Registros vinculados ao cidadão" />{!selected ? <Empty text="Selecione um cidadão para consultar o histórico." /> : items.length ? items.map(item => <article className="history-item" key={item.id}><span className="record-icon blue"><FileText size={18} /></span><div><strong>{item.title}</strong><p>{item.detail}</p></div><small>{formatDate(item.date)}</small></article>) : <Empty text="Nenhum registro encontrado para este cidadão." />}</section>;
+    {modal === 'patient' && <ModalShell title={data.patients.some(p => p.id === patientDraft.id) ? 'Editar paciente' : 'Novo paciente'} subtitle="Preencha os dados cadastrais do paciente fictício" onClose={() => setModal(null)} wide><PatientForm patient={patientDraft} onSave={savePatient} onClose={() => setModal(null)} onError={message => notify(message, true)} /></ModalShell>}
+    {modal === 'record' && patient && <RecordModal patient={patient} data={data} onClose={() => setModal(null)} onEdit={() => editPatient(patient)} onClinical={p => { if (commit({ ...data, patients: data.patients.map(item => item.id === p.id ? p : item) }, 'Histórico clínico atualizado.')) setModal(null) }} onStart={() => startModal(patient.id)} onVaccinate={() => addVaccination(patient.id)} />}
+    {modal === 'newEncounter' && <NewEncounterModal patients={data.patients} initialPatient={selectedPatient} onClose={() => setModal(null)} onStart={startEncounter} />}
+    {modal === 'vaccination' && <ModalShell title={data.vaccinations.some(v => v.id === vaccinationDraft.id) ? 'Editar vacinação' : 'Registrar vacinação'} subtitle="Preencha as informações da aplicação simulada" onClose={() => setModal(null)} wide><VaccinationForm vaccination={vaccinationDraft} patients={data.patients} onSave={saveVaccination} onClose={() => setModal(null)} onError={message => notify(message, true)} /></ModalShell>}
+    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} onExport={exportData} onImport={importData} onRestore={() => reset(true)} onClear={() => reset(false)} />}
+    {toast && <div role="status" className={`toast ${toast.error ? 'toast-error' : ''}`}>{toast.error ? <X size={17} /> : <CheckCircle2 size={17} />}{toast.text}</div>}
+  </div>
 }
