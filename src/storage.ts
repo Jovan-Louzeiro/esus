@@ -18,7 +18,8 @@ export function isData(value: unknown): value is Data {
   if (!encounters.every(e => {
     if (!strings(e, ['id', 'patientId', 'date', 'type', 'professional', 'status', 'finishedAt'])) return false
     const item = e as Record<string, unknown>
-    return !!item.id && timestamp(item.date as string) && (item.status === 'Em andamento' ? !item.finishedAt : item.status === 'Finalizado' && timestamp(item.finishedAt as string)) && strings(item.vitals, ['pressure', 'heart', 'respiratory', 'temperature', 'oxygen', 'weight', 'height', 'glucose']) && strings(item.soap, ['subjective', 'objective', 'assessment', 'plan']) && strings(item.conduct, ['guidance', 'exams', 'referral', 'returnDate', 'notes']) && (!(item.conduct as { returnDate: string }).returnDate || date((item.conduct as { returnDate: string }).returnDate))
+    const priority = item.priority
+    return (priority === undefined || ['red', 'orange', 'yellow', 'green', 'blue', 'unclassified'].includes(priority as string)) && !!item.id && timestamp(item.date as string) && (item.status === 'Em andamento' ? !item.finishedAt : item.status === 'Finalizado' && timestamp(item.finishedAt as string)) && strings(item.vitals, ['pressure', 'heart', 'respiratory', 'temperature', 'oxygen', 'weight', 'height', 'glucose']) && strings(item.soap, ['subjective', 'objective', 'assessment', 'plan']) && strings(item.conduct, ['guidance', 'exams', 'referral', 'returnDate', 'notes']) && (!(item.conduct as { returnDate: string }).returnDate || date((item.conduct as { returnDate: string }).returnDate))
   })) return false
   if (!vaccinations.every(v => strings(v, ['id', 'patientId', 'vaccine', 'dose', 'date', 'batch', 'manufacturer', 'unit', 'route', 'site', 'notes', 'nextDose', 'professional']))) return false
   if (!vaccinations.every(v => { const item = v as { id: string; vaccine: string; dose: string; date: string; nextDose: string }; return !!item.id && !!item.vaccine && !!item.dose && date(item.date) && (!item.nextDose || date(item.nextDose)) })) return false
@@ -26,6 +27,10 @@ export function isData(value: unknown): value is Data {
   if (!appointments.every(a => { const item = a as { id: string; date: string; time: string }; return !!item.id && date(item.date) && /^([01]\d|2[0-3]):[0-5]\d$/.test(item.time) })) return false
   const ids = new Set(patients.map(p => (p as { id: string }).id))
   return ids.size === patients.length && [encounters, vaccinations, appointments].every(items => items.every(item => ids.has((item as { patientId: string }).patientId)) && new Set(items.map(item => (item as { id: string }).id)).size === items.length)
+}
+
+export function normalizeData(data: Data): Data {
+  return { ...data, encounters: data.encounters.map(encounter => ({ ...encounter, priority: encounter.priority ?? 'unclassified' })) }
 }
 
 export function saveData(data: Data) {
@@ -36,7 +41,7 @@ export function loadData(): Data {
   const marker = localStorage.getItem(keys.marker)
   if (marker) {
     const parsed: unknown = JSON.parse(marker)
-    if (parsed && typeof parsed === 'object' && isData((parsed as { data?: unknown }).data)) return (parsed as { data: Data }).data
+    if (parsed && typeof parsed === 'object' && isData((parsed as { data?: unknown }).data)) return normalizeData((parsed as { data: Data }).data)
     throw new Error('Os dados locais estão em formato inválido. Importe um backup ou limpe os dados do navegador.')
   }
   if (Object.values(keys).some(key => localStorage.getItem(key) !== null)) throw new Error('Foram encontrados dados locais incompletos. Importe um backup antes de continuar.')

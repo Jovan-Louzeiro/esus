@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Activity, ArrowLeft, ArrowRight, Bell, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Clock3, Download, FileHeart, HeartPulse, LayoutDashboard, Menu, Plus, Search, Settings, ShieldCheck, Stethoscope, Syringe, Trash2, Upload, UserRound, UsersRound, X } from 'lucide-react'
-import { age, blankEncounter, blankPatient, blankVaccination, dateLabel, doses, encounterTypes, seedData, timeLabel, today, vaccines, type Appointment, type Data, type Encounter, type Patient, type Vaccination, type VitalKey } from './model'
-import { clearData, isData, loadData, saveData } from './storage'
+import { age, blankEncounter, blankPatient, blankVaccination, dateLabel, doses, encounterTypes, seedData, timeLabel, today, triagePriorities, vaccines, type Appointment, type Data, type Encounter, type Patient, type TriagePriority, type Vaccination, type VitalKey } from './model'
+import { clearData, isData, loadData, normalizeData, saveData } from './storage'
 
 type Page = 'dashboard' | 'patients' | 'encounters' | 'vaccinations'
 type Modal = 'patient' | 'record' | 'newEncounter' | 'vaccination' | 'settings' | null
@@ -25,6 +25,13 @@ function Field({ label, children, required = false, hint }: { label: string; chi
 function Badge({ status }: { status: string }) {
   const style = status === 'Finalizado' ? 'green' : status === 'Em andamento' || status === 'Em atendimento' ? 'blue' : 'amber'
   return <span className={`badge ${style}`}><i />{status}</span>
+}
+function PriorityBadge({ priority }: { priority: TriagePriority }) {
+  const label = triagePriorities.find(item => item.value === priority)?.label ?? 'Não classificado'
+  return <span className={`priority-badge priority-${priority}`}><i />{label}</span>
+}
+function PrioritySelector({ value, onChange }: { value: Exclude<TriagePriority, 'unclassified'> | ''; onChange: (priority: Exclude<TriagePriority, 'unclassified'>) => void }) {
+  return <div className="triage-options" role="radiogroup" aria-label="Prioridade do atendimento">{triagePriorities.map(item => <button key={item.value} type="button" role="radio" aria-checked={value === item.value} className={`triage-option triage-${item.value} ${value === item.value ? 'selected' : ''}`} onClick={() => onChange(item.value)}><i /><strong>{item.label}</strong><small>{item.description}</small></button>)}</div>
 }
 function Avatar({ name, index = 0 }: { name: string; index?: number }) { return <span className={`avatar avatar-${index % 5}`}>{initials(name)}</span> }
 function Empty({ text }: { text: string }) { return <div className="empty"><FileHeart size={25} /><p>{text}</p></div> }
@@ -96,7 +103,7 @@ function RecordModal({ patient, data, onClose, onEdit, onClinical, onStart, onVa
       {tab === 'Histórico clínico' && <form onSubmit={e => { e.preventDefault(); onClinical(clinical) }} className="clinical-form">
         {([['allergies', 'Alergias'], ['conditions', 'Condições de saúde'], ['medications', 'Medicamentos em uso']] as const).map(([key, label]) => <Field label={label} key={key}><textarea rows={3} value={clinical[key]} onChange={e => setClinical({ ...clinical, [key]: e.target.value })} placeholder={`Registre ${label.toLowerCase()}...`} /></Field>)}
         <button className="btn primary">Salvar informações</button></form>}
-      {tab === 'Atendimentos' && (encounters.length ? <div className="history-list">{encounters.map(e => <div className="history-item" key={e.id}><div><strong>{e.type}</strong><small>{dateLabel(localDate(e.date))} às {timeLabel(e.date)} · {e.professional}</small>{e.soap.assessment && <p>{e.soap.assessment}</p>}</div><Badge status={e.status} /></div>)}</div> : <Empty text="Nenhum atendimento registrado para este paciente." />)}
+      {tab === 'Atendimentos' && (encounters.length ? <div className="history-list">{encounters.map(e => <div className="history-item" key={e.id}><div><strong>{e.type}</strong><small>{dateLabel(localDate(e.date))} às {timeLabel(e.date)} · {e.professional}</small>{e.soap.assessment && <p>{e.soap.assessment}</p>}</div><div className="row-actions"><PriorityBadge priority={e.priority} /><Badge status={e.status} /></div></div>)}</div> : <Empty text="Nenhum atendimento registrado para este paciente." />)}
       {tab === 'Vacinação' && <><div className="section-action"><span>Histórico de aplicações</span><button className="btn secondary small" onClick={onVaccinate}><Plus size={15} /> Registrar vacina</button></div>{vaccinations.length ? <div className="history-list">{vaccinations.map(v => <div className="history-item" key={v.id}><div><strong>{v.vaccine} · {v.dose}</strong><small>Aplicação: {dateLabel(v.date)} · Lote: {v.batch}</small><small>Próxima dose: {dateLabel(v.nextDose)}</small></div><span className="badge green"><i />Registrada</span></div>)}</div> : <Empty text="Nenhuma vacina registrada para este paciente." />}</>}
     </div>
   </ModalShell>
@@ -118,7 +125,7 @@ function Dashboard({ data, navigate, openPatient, openEncounter, quick }: { data
     </div>
     <div className="dashboard-grid">
       <section className="panel recent-panel"><div className="panel-head"><div><h2>Atendimentos recentes</h2><p>Acompanhe os últimos atendimentos realizados</p></div><button className="text-link" onClick={() => navigate('encounters')}>Ver todos <ArrowRight size={15} /></button></div>
-        {recent.length ? <div className="table-scroll"><table><thead><tr><th>PACIENTE</th><th>HORÁRIO</th><th>TIPO DE ATENDIMENTO</th><th>STATUS</th><th></th></tr></thead><tbody>{recent.map((e, i) => <tr key={e.id}><td><button className="plain-button" onClick={() => openPatient(e.patientId)}><PatientCell patient={data.patients.find(p => p.id === e.patientId)} index={i} /></button></td><td>{timeLabel(e.date)}</td><td>{e.type}</td><td><Badge status={e.status} /></td><td><button className="icon-btn subtle" aria-label="Abrir atendimento" onClick={() => openEncounter(e.id)}><ChevronRight size={18} /></button></td></tr>)}</tbody></table></div> : <Empty text="Nenhum atendimento registrado ainda." />}
+        {recent.length ? <div className="table-scroll"><table><thead><tr><th>PACIENTE</th><th>HORÁRIO</th><th>TIPO DE ATENDIMENTO</th><th>PRIORIDADE</th><th>STATUS</th><th></th></tr></thead><tbody>{recent.map((e, i) => <tr key={e.id}><td><button className="plain-button" onClick={() => openPatient(e.patientId)}><PatientCell patient={data.patients.find(p => p.id === e.patientId)} index={i} /></button></td><td>{timeLabel(e.date)}</td><td>{e.type}</td><td><PriorityBadge priority={e.priority} /></td><td><Badge status={e.status} /></td><td><button className="icon-btn subtle" aria-label="Abrir atendimento" onClick={() => openEncounter(e.id)}><ChevronRight size={18} /></button></td></tr>)}</tbody></table></div> : <Empty text="Nenhum atendimento registrado ainda." />}
       </section>
       <section className="panel agenda-panel"><div className="panel-head"><div><h2>Agenda de hoje</h2><p>Consultas programadas para hoje</p></div><div className="panel-icon"><CalendarDays size={18} /></div></div>
         {agenda.length ? <div className="agenda-list">{agenda.map((a, i) => <button className="agenda-item" key={a.id} onClick={() => openPatient(a.patientId)}><span className="agenda-time">{a.time}</span><span className={`timeline-dot dot-${i % 3}`} /><span className="agenda-copy"><strong>{patientName(data, a.patientId)}</strong><small>{a.reason}</small><Badge status={a.status} /></span><ChevronRight size={15} /></button>)}</div> : <Empty text="Nenhum paciente agendado para hoje." />}
@@ -156,7 +163,7 @@ function EncountersPage({ data, query, setQuery, openEncounter, add }: { data: D
   return <><div className="page-title"><div><div className="eyebrow">CUIDADO E ACOMPANHAMENTO</div><h1>Atendimentos</h1><p>Gerencie as consultas de enfermagem da unidade.</p></div><button className="btn primary" onClick={add}><Plus size={18} /> Novo atendimento</button></div>
     <section className="panel"><div className="list-heading"><div><h2>Atendimentos <span className="count">{encounters.length}</span></h2><p>Histórico de consultas da unidade</p></div></div>
       <div className="filters"><div className="search-field"><Search size={17} /><input placeholder="Buscar paciente..." value={query} onChange={e => setQuery(e.target.value)} /></div><select aria-label="Filtrar atendimentos" value={filter} onChange={e => setFilter(e.target.value)}><option>Todos</option><option>Hoje</option><option>Em andamento</option><option>Finalizado</option></select></div>
-      {encounters.length ? <div className="table-scroll"><table><thead><tr><th>PACIENTE</th><th>DATA</th><th>HORÁRIO</th><th>TIPO</th><th>PROFISSIONAL</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>{encounters.map((e, i) => <tr key={e.id}><td><PatientCell patient={data.patients.find(p => p.id === e.patientId)} index={i} /></td><td>{dateLabel(localDate(e.date))}</td><td>{timeLabel(e.date)}</td><td>{e.type}</td><td>{e.professional}</td><td><Badge status={e.status} /></td><td><button className="table-link" onClick={() => openEncounter(e.id)}>{e.status === 'Finalizado' ? 'Visualizar' : 'Continuar'}</button></td></tr>)}</tbody></table></div> : <Empty text="Nenhum atendimento encontrado." />}
+      {encounters.length ? <div className="table-scroll"><table><thead><tr><th>PACIENTE</th><th>DATA</th><th>HORÁRIO</th><th>TIPO</th><th>PRIORIDADE</th><th>PROFISSIONAL</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>{encounters.map((e, i) => <tr key={e.id}><td><PatientCell patient={data.patients.find(p => p.id === e.patientId)} index={i} /></td><td>{dateLabel(localDate(e.date))}</td><td>{timeLabel(e.date)}</td><td>{e.type}</td><td><PriorityBadge priority={e.priority} /></td><td>{e.professional}</td><td><Badge status={e.status} /></td><td><button className="table-link" onClick={() => openEncounter(e.id)}>{e.status === 'Finalizado' ? 'Visualizar' : 'Continuar'}</button></td></tr>)}</tbody></table></div> : <Empty text="Nenhum atendimento encontrado." />}
     </section></>
 }
 
@@ -178,8 +185,9 @@ function Consultation({ encounter, patient, update, back, finish, saved }: { enc
   const vitalFields: [VitalKey, string, string][] = [['pressure', 'Pressão arterial', 'mmHg · ex.: 120/80'], ['heart', 'Frequência cardíaca', 'bpm'], ['respiratory', 'Frequência respiratória', 'irpm'], ['temperature', 'Temperatura', '°C'], ['oxygen', 'Saturação de oxigênio', '%'], ['weight', 'Peso', 'kg'], ['height', 'Altura', 'cm'], ['glucose', 'Glicemia capilar', 'mg/dL']]
   const weight = Number(encounter.vitals.weight), height = Number(encounter.vitals.height)
   const bmi = weight > 0 && height > 0 ? (weight / (height / 100) ** 2).toFixed(1) : '—'
-  return <><button className="back-link" onClick={back}><ArrowLeft size={17} /> Voltar para atendimentos</button><div className="page-title consultation-title"><div><div className="eyebrow">CONSULTA DE ENFERMAGEM</div><h1>{readonly ? 'Atendimento finalizado' : 'Atendimento em andamento'}</h1><p>Registro clínico de treinamento · {encounter.type}</p></div><Badge status={encounter.status} /></div>
+  return <><button className="back-link" onClick={back}><ArrowLeft size={17} /> Voltar para atendimentos</button><div className="page-title consultation-title"><div><div className="eyebrow">CONSULTA DE ENFERMAGEM</div><h1>{readonly ? 'Atendimento finalizado' : 'Atendimento em andamento'}</h1><p>Registro clínico de treinamento · {encounter.type}</p></div><div className="row-actions"><PriorityBadge priority={encounter.priority} /><Badge status={encounter.status} /></div></div>
     <div className="consult-patient"><PatientCell patient={patient} subtitle={`${age(patient.birth)} anos · ${patient.sex} · CNS ${patient.cns || 'não informado'}`} /><div><small>DATA E HORÁRIO</small><strong>{dateLabel(localDate(encounter.date))} às {timeLabel(encounter.date)}</strong></div><div><small>PROFISSIONAL</small><strong>{encounter.professional}</strong></div></div>
+    {!readonly && <section className="panel consult-section triage-section"><div className="section-title-icon"><div className="small-icon sand"><Activity size={19} /></div><div><h2>Prioridade do atendimento</h2><p>Classificação manual para fins de simulação</p></div></div><PrioritySelector value={encounter.priority === 'unclassified' ? '' : encounter.priority} onChange={priority => update({ ...encounter, priority })} /></section>}
     <fieldset disabled={readonly} className="consult-fields">
       <section className="panel consult-section"><div className="section-title-icon"><div className="small-icon mint"><HeartPulse size={19} /></div><div><h2>Sinais vitais</h2><p>Registre os dados aferidos durante a consulta</p></div></div><div className="vitals-grid">
         {vitalFields.map(([key, label, unit]) => <Field label={label} key={key}><div className="unit-input"><input type={key === 'pressure' ? 'text' : 'number'} min={key === 'pressure' ? undefined : '0'} step="any" value={encounter.vitals[key]} placeholder="—" onChange={e => update({ ...encounter, vitals: { ...encounter.vitals, [key]: e.target.value } })} /><span>{unit}</span></div></Field>)}
@@ -198,14 +206,16 @@ function Consultation({ encounter, patient, update, back, finish, saved }: { enc
   </>
 }
 
-function NewEncounterModal({ patients, initialPatient, onClose, onStart }: { patients: Patient[]; initialPatient: string; onClose: () => void; onStart: (id: string, type: string) => void }) {
+function NewEncounterModal({ patients, initialPatient, onClose, onStart }: { patients: Patient[]; initialPatient: string; onClose: () => void; onStart: (id: string, type: string, priority: TriagePriority) => void }) {
   const [patient, setPatient] = useState(initialPatient)
   const [type, setType] = useState('Consulta agendada')
-  return <ModalShell title="Novo atendimento" subtitle="Selecione o paciente e o tipo de consulta" onClose={onClose}><form onSubmit={e => { e.preventDefault(); onStart(patient, type) }}><div className="modal-body stack">
+  const [priority, setPriority] = useState<Exclude<TriagePriority, 'unclassified'> | ''>('')
+  return <ModalShell title="Novo atendimento" subtitle="Selecione o paciente, o tipo e a prioridade" onClose={onClose}><form onSubmit={e => { e.preventDefault(); if (priority) onStart(patient, type, priority) }}><div className="modal-body stack">
     <Field label="Paciente" required><select required value={patient} onChange={e => setPatient(e.target.value)}><option value="">Selecione um paciente</option>{patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
     <Field label="Tipo de atendimento" required><select value={type} onChange={e => setType(e.target.value)}>{encounterTypes.map(t => <option key={t}>{t}</option>)}</select></Field>
+    <div className="triage-field"><span>Prioridade do atendimento <b className="required">*</b></span><PrioritySelector value={priority} onChange={setPriority} /><small className="triage-hint">Classificação manual para fins de simulação. Avalie conforme o protocolo da unidade.</small></div>
     {!patients.length && <p className="muted">Cadastre um paciente antes de iniciar um atendimento.</p>}
-  </div><div className="modal-footer"><button type="button" className="btn secondary" onClick={onClose}>Cancelar</button><button disabled={!patients.length} className="btn primary">Iniciar atendimento <ArrowRight size={16} /></button></div></form></ModalShell>
+  </div><div className="modal-footer"><button type="button" className="btn secondary" onClick={onClose}>Cancelar</button><button disabled={!patients.length || !priority} className="btn primary">Iniciar atendimento <ArrowRight size={16} /></button></div></form></ModalShell>
 }
 
 function SettingsModal({ onClose, onExport, onImport, onRestore, onClear }: { onClose: () => void; onExport: () => void; onImport: (file: File) => void; onRestore: () => void; onClear: () => void }) {
@@ -254,8 +264,8 @@ export default function App() {
     commit({ patients: data.patients.filter(item => item.id !== p.id), encounters: data.encounters.filter(e => e.patientId !== p.id), vaccinations: data.vaccinations.filter(v => v.patientId !== p.id), appointments: data.appointments.filter(a => a.patientId !== p.id) }, 'Paciente e registros vinculados excluídos.')
   }
   const startModal = (id = '') => { setSelectedPatient(id); setModal('newEncounter') }
-  const startEncounter = (id: string, type: string) => {
-    const e = blankEncounter(id, type)
+  const startEncounter = (id: string, type: string, priority: TriagePriority) => {
+    const e = blankEncounter(id, type, priority)
     let updated = false
     const appointments: Appointment[] = data.appointments.map(a => { if (!updated && a.patientId === id && a.date === today() && a.status === 'Agendado') { updated = true; return { ...a, status: 'Em atendimento' } }; return a })
     if (commit({ ...data, appointments, encounters: [...data.encounters, e] }, 'Atendimento iniciado.')) { setModal(null); setPage('encounters'); setSelectedEncounter(e.id); setQuery('') }
@@ -284,7 +294,7 @@ export default function App() {
       const parsed: unknown = JSON.parse(await file.text())
       if (!isData(parsed)) { notify('Arquivo inválido ou incompatível com o sistema.', true); return }
       if (!confirm('Importar este backup e substituir todos os dados atuais?')) return
-      if (commit(parsed, 'Dados importados com sucesso.', true)) { setModal(null); setSelectedEncounter(''); setSelectedPatient(''); setPage('dashboard') }
+      if (commit(normalizeData(parsed), 'Dados importados com sucesso.', true)) { setModal(null); setSelectedEncounter(''); setSelectedPatient(''); setPage('dashboard') }
     } catch { notify('Não foi possível ler o arquivo JSON.', true) }
   }
   const reset = (restore: boolean) => {

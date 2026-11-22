@@ -6,9 +6,17 @@ export type Patient = {
   allergies: string; conditions: string; medications: string
 }
 export type VitalKey = 'pressure' | 'heart' | 'respiratory' | 'temperature' | 'oxygen' | 'weight' | 'height' | 'glucose'
+export type TriagePriority = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'unclassified'
+export const triagePriorities: { value: Exclude<TriagePriority, 'unclassified'>; label: string; description: string }[] = [
+  { value: 'red', label: 'Vermelho', description: 'Emergência' },
+  { value: 'orange', label: 'Laranja', description: 'Muito urgente' },
+  { value: 'yellow', label: 'Amarelo', description: 'Urgente' },
+  { value: 'green', label: 'Verde', description: 'Pouco urgente' },
+  { value: 'blue', label: 'Azul', description: 'Não urgente' },
+]
 export type Encounter = {
   id: string; patientId: string; date: string; type: string; professional: string
-  status: 'Em andamento' | 'Finalizado'; finishedAt: string
+  status: 'Em andamento' | 'Finalizado'; finishedAt: string; priority: TriagePriority
   vitals: Record<VitalKey, string>
   soap: { subjective: string; objective: string; assessment: string; plan: string }
   conduct: { guidance: string; exams: string; referral: string; returnDate: string; notes: string }
@@ -41,8 +49,9 @@ export const age = (birth: string) => {
   return String(Number(now.slice(0, 4)) - Number(birth.slice(0, 4)) - (now.slice(5) < birth.slice(5) ? 1 : 0))
 }
 export const blankPatient = (): Patient => ({ id: uid(), name: '', cpf: '', cns: '', birth: '', sex: 'Não informado', mother: '', phone: '', email: '', cep: '', city: '', neighborhood: '', street: '', number: '', complement: '', allergies: '', conditions: '', medications: '' })
-export const blankEncounter = (patientId: string, type: string): Encounter => ({
+export const blankEncounter = (patientId: string, type: string, priority: TriagePriority = 'unclassified'): Encounter => ({
   id: uid(), patientId, type, date: new Date().toISOString(), professional, status: 'Em andamento', finishedAt: '',
+  priority,
   vitals: { pressure: '', heart: '', respiratory: '', temperature: '', oxygen: '', weight: '', height: '', glucose: '' },
   soap: { subjective: '', objective: '', assessment: '', plan: '' },
   conduct: { guidance: '', exams: '', referral: '', returnDate: '', notes: '' },
